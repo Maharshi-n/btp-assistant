@@ -1,0 +1,1462 @@
+╭─── Claude Code v2.1.97 ──────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│               Welcome back Maharshi!               │ started                 │
+│                                                    │ Run /init to create a … │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ Recent activity         │
+│                        ▘▘ ▝▝                       │ No recent activity      │
+│       Sonnet 4.6 · Claude Pro ·                    │                         │
+│       naharmaharshi@gmail.com's Organization       │                         │
+│                   E:\BTP project                   │                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ⎿  SessionStart:clear hook error
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ /mcp 
+  ⎿  MCP dialog dismissed
+
+❯ /model                                                                        
+  ⎿  Set model to Opus 4.6 (1M context) · Billed as extra usage
+
+❯ /agents 
+  ⎿  Agents dialog dismissed
+
+❯ So basically I am building a personal AI assistant that lives on my own       
+  laptop, and I access it from my phone through my college WiFi — like having   
+  ChatGPT but it's mine, running on my own machine, with full control over my   
+  PC.                                                                           
+  My laptop is the server. My phone is just the screen I talk to it from.       
+  Nobody else is using it — it's purely mine. The login is just there so if     
+  someone stumbles onto the IP address on the LAN, they can't get in without my 
+   credentials.                                                                 
+  From my phone it feels exactly like ChatGPT — a clean chat interface where I  
+  type or maybe even speak tasks. But the difference is this thing actually has 
+   hands. It can touch my laptop — my files, my terminal, my Gmail, my Drive —  
+  because it's running right there on the machine.                              
+  When I give it a big or complex task, it doesn't handle it alone. It breaks   
+  the task down and spins up multiple specialized agents — one might be         
+  searching the web, one summarizing documents, one writing a report, one       
+  managing files — all working in parallel. And I can watch all of this         
+  happening live, both on my phone and on my laptop's browser. I can see each   
+  agent, what it's currently doing, what it has already completed, and its live 
+   logs — like a control room view of work being done on my behalf.             
+  It is connected to my Gmail, Google Drive, and Google Calendar. So I can tell 
+   it things like "summarize my unread emails," "organize the files in my       
+  project folder," or "find all PDFs related to my BTP and move them into one   
+  folder." It actually does those things, not just tells me how to.             
+  I can also set up cron jobs — automated tasks that run on a schedule without  
+  me having to ask again. Like every Monday morning it summarizes my unread     
+  emails, every Friday it pulls the latest research papers on my thesis topic,  
+  or every night it cleans up my downloads folder. I set these once in plain    
+  English and they just keep running in the background on their own.            
+  I can swap the AI model anytime from the UI. If I'm doing something simple, I 
+   switch to a cheaper faster model to save tokens. If I need heavy reasoning   
+  or deep research, I bump it up to a more powerful one. That toggle is right   
+  there in the interface.                                                       
+  The permission system is smart — if the agent wants to do something           
+  sensitive, like delete a file, run a terminal command, or send an email, it   
+  pauses and pings me on my phone asking for approval. I approve or deny right  
+  there in the chat. But for things I've already pre-approved — like reading    
+  files, searching the web, or summarizing documents — it just does them        
+  automatically without interrupting me every time.                             
+  So in short — it's my pocket PC and personal AI workspace. My laptop does all 
+   the work, my phone is the remote I carry everywhere, the agents are doing    
+  tasks in the background, and I can watch everything happening in real time    
+  from either my phone or my laptop's browser.                                  
+  So just discuss this with me, i would recomend to use langchain and rabbitq   
+  or redis and these type of things, also it should be simple and architecture  
+  like its my BTP project, discuss with me if any question also we will discuss 
+   about more features to make it more cool and good.                           
+
+● I'll start by invoking the brainstorming skill since this is clearly a
+  creative design/architecture discussion for a new project.
+
+● Skill(superpowers:brainstorming)
+  ⎿  Successfully loaded skill
+
+● Got it. Let me start exploring your project context before asking questions.
+
+  Read 1 file, listed 1 directory (ctrl+o to expand)
+  ⎿  PostToolUse:Bash hook error
+
+● So the directory is essentially empty — fresh start. Good to know. Before I
+  dive into questions, I want to flag something important about scope.
+
+  What you're describing is actually multiple significant subsystems bundled
+  together:
+
+  1. Remote access layer — phone ↔ laptop over LAN with auth, tunneling,
+  real-time updates
+  2. Chat UI — ChatGPT-style frontend (web + mobile-friendly)
+  3. Agent orchestration — task decomposition, multi-agent spawning, parallel
+  execution, live logs
+  4. Tool/integration layer — filesystem, terminal, Gmail, Drive, Calendar OAuth
+  5. Permission system — sensitive-action gating with mobile push approval
+  6. Scheduler — cron-style recurring tasks in natural language
+  7. Model switching — multi-provider routing
+  8. Observability — live "control room" view of agents and logs
+
+  Each of these is a real project on its own. As a BTP (B.Tech Project), trying
+  to build all of them well in one shot is the classic trap — you'll get
+  something that half-works everywhere and shines nowhere. Your BTP committee
+  will also want a clear thesis/contribution, not just "I wired 8 things
+  together."
+
+  Before we brainstorm architecture and pick between LangChain/Redis/RabbitMQ, I
+   want to get the framing right first.
+
+  Question 1 of a few: What's the core of your BTP — the part that's actually 
+  your contribution, the thing you'd demo first and defend in your viva?
+
+  Pick the one that feels closest (or tell me if it's something else):
+
+  - A) Multi-agent orchestration — the interesting bit is how tasks get
+  decomposed and how multiple agents collaborate in parallel with live
+  observability. Gmail/Drive/cron are just demos of capability.
+  - B) Personal AI that actually controls your PC — the interesting bit is the
+  embodiment: an assistant with real hands on your filesystem, terminal, and
+  Google account, with a smart permission model. Multi-agent is a means, not the
+   point.
+  - C) Remote/mobile control of a self-hosted AI — the interesting bit is the
+  "pocket PC" angle: secure phone→laptop control, approval flows on mobile,
+  real-time sync. The agents are table stakes.
+  - D) Honestly, I haven't framed it for the BTP committee yet — I just want to 
+  build the cool thing and figure out the framing later.
+
+  Your answer shapes everything downstream — what we build first, what we can
+  safely cut, and which of LangChain/Redis/RabbitMQ even make sense. Which one
+  resonates?
+
+✻ Sautéed for 32s
+
+❯ let me simplify, i want simple things like will just put ip with http in my   
+  phone as i am connected to phone then ill select phone and it will give me    
+  phone interface (as its made only for me), also model switching means i can   
+  only switch between gpt models ass i only have its api key only. also talking 
+   about observability, i dont want that detailed logs, i just want a interface 
+   where i can see ike these agents are doing this task, not like what they     
+  collected and all.                                                            
+  I you think this is overkill, then multi agent orchastration + personali AI   
+  would be fine. (try to add phone if possible)                                 
+
+● Perfect, that simplifies things a lot. Let me play back what I heard to make
+  sure we're aligned:
+
+  Simplified scope:
+  - Core: Multi-agent orchestration + Personal AI with hands on your PC (files,
+  terminal, Gmail/Drive/Calendar)
+  - Access: http://<laptop-ip>:<port> from phone on same WiFi → serves a
+  phone-friendly UI automatically (device detection). Same URL on laptop browser
+   → desktop UI. No tunneling, no complex auth infra — just a login screen so
+  random LAN people can't walk in.
+  - Model switching: Just a dropdown between GPT models (gpt-4o, gpt-4o-mini,
+  gpt-4-turbo, etc.) since you only have an OpenAI key.
+  - Observability (lite): A simple panel showing "Agent 1: searching web for X",
+   "Agent 2: summarizing doc Y", "Agent 3: ✅ done" — status cards, not log
+  streams.
+  - Still in: Task decomposition into parallel agents, permission prompts for
+  sensitive ops, natural-language cron jobs, Gmail/Drive/Calendar integration.
+
+  That feels right-sized for a BTP — one crisp thesis ("a self-hosted,
+  multi-agent personal AI with embodied control of a user's machine, accessible
+  from mobile over LAN") and a demoable system.
+
+  Before I push on architecture, one more scoping question because it
+  meaningfully changes the design:
+
+  Question 2: For the multi-agent part — how "smart" does the orchestration need
+   to be?
+
+  - A) Planner + Workers (recommended for BTP). When you send a task, one LLM
+  call decides "this needs 3 subtasks: web search, summarize, write report" and
+  spawns 3 worker agents in parallel. Workers report back, planner assembles the
+   answer. Simple, predictable, easy to demo, easy to defend in viva. ~80% of
+  what LangGraph/CrewAI do, minus the complexity.
+  - B) Fully dynamic agent graph. Agents can spawn sub-agents, re-plan mid-task,
+   loop, self-correct. More impressive on paper but much harder to debug, much
+  harder to show "what's happening" cleanly on a phone screen, and much easier
+  for your viva examiner to poke holes in.
+  - C) Single agent with tools, no "multi-agent" at all. One agent that just
+  uses tools sequentially. Simplest. But then you lose the "parallel agents
+  working for me" demo, which sounded important to you.
+
+  My strong recommendation is A. It gives you the visible "multiple agents doing
+   stuff in parallel" that makes the demo pop, it's genuinely useful
+  (parallelism = speed), and it's bounded enough that you can actually finish
+  it. B is a trap for a BTP timeline. C undersells the project.
+
+  Which direction?
+
+❯ we will go with option B but we will build in langgraph or langchain (thats   
+  my suggestion if you want you can change)                                     
+
+● Good call pushing for B — and yes, LangGraph is exactly the right tool for 
+  that. Let me be honest about the tradeoff you just made and make sure you're
+  going in with eyes open, because this affects everything downstream.
+
+  Why LangGraph fits B (and why plain LangChain doesn't):
+  - LangChain's "agent" abstractions (AgentExecutor etc.) are fine for linear
+  tool-use loops but they get messy when you want agents spawning sub-agents,
+  re-planning, or looping with state.
+  - LangGraph is literally built for this: you model your system as a stateful 
+  graph where nodes are agents/tools and edges are transitions. Cycles,
+  branching, re-planning, human-in-the-loop interrupts, persistence — all
+  first-class.
+  - LangGraph also has built-in streaming of node-level events, which is exactly
+   what you need for your "Agent 1 is doing X" phone panel. You don't have to
+  build that plumbing yourself.
+  - It has a checkpointer (SQLite/Postgres) that persists graph state — so if
+  you restart your laptop mid-task, the agent resumes. Big win for a self-hosted
+   always-on assistant.
+  - Human-in-the-loop interrupts are built-in — that's your permission system,
+  basically for free. When the graph hits a sensitive tool, it interrupts, waits
+   for approval from your phone, then resumes.
+
+  So LangGraph isn't just "fine" for B, it's genuinely the best choice. Good
+  instinct.
+
+  The honest tradeoff of picking B:
+  You're signing up for a harder system to reason about, harder to demo cleanly,
+   and harder to defend. That's a real cost, but it's manageable if we put
+  guardrails around it:
+
+  1. Bounded recursion. Sub-agents can spawn sub-agents, but with a hard max
+  depth (e.g., 3) and a hard max total agents per task (e.g., 10). Without this,
+   one bad plan can explode into a runaway cost bomb on your OpenAI key.
+  2. Every spawned agent is a node in the same graph. Don't let agents run
+  "outside" LangGraph — then your observability breaks and your phone panel
+  can't see them. Everything flows through the graph so streaming events capture
+   everything uniformly.
+  3. A "supervisor" pattern. One top-level supervisor agent receives the task,
+  decides to decompose or act directly, routes to workers, and workers can
+  request more workers via the supervisor (not directly). This keeps the graph
+  sane and gives you a clean tree to visualize on the phone.
+
+  This is a well-known LangGraph pattern — the "hierarchical agent teams" /
+  "supervisor" architecture from their docs.
+
+  One more thing I want to flag before we lock this in: RabbitMQ and Redis are
+  almost certainly overkill for your setup. Here's why — and I want your input:
+
+  - You are the only user. One person, one laptop.
+  - LangGraph already does async + parallelism natively via Python asyncio.
+  Multiple agents run in parallel as async tasks in the same process. No message
+   broker needed.
+  - LangGraph has a built-in checkpointer (SQLite) for state persistence. You
+  don't need Redis for that.
+  - Live updates to your phone can come from LangGraph's event stream →
+  WebSocket → phone UI. No pub/sub broker needed.
+  - Cron jobs can use APScheduler (a Python library), which runs in-process and
+  persists jobs to SQLite. No Celery/Redis/RabbitMQ.
+
+  Bringing in Redis or RabbitMQ would mean running extra services, writing extra
+   glue code, and defending an architecture choice in your viva that you don't
+  actually need. Your examiner will ask "why did you need a message broker for a
+   single-user system?" and the honest answer is "I didn't."
+
+  Question 3: Are you okay dropping Redis/RabbitMQ entirely, in favor of:
+  - LangGraph for agent orchestration + state + streaming
+  - SQLite for persistence (chat history, cron jobs, checkpoints, user auth)
+  - FastAPI + WebSockets for the server and live updates to phone/browser
+  - APScheduler for cron jobs
+
+  ...or is there a specific reason you wanted Redis/RabbitMQ in the mix? (e.g.,
+  you want to learn them for your resume, your BTP guide suggested them, you're
+  planning to scale beyond yourself later, etc.) — totally valid reasons, I just
+   want to know before we finalize.
+
+❯ yes we will use apsscheduler, but keep that in mind as it should able to      
+  handle queries like "if i get any mail from maharshinahar10@gmail.com then    
+  create a reply for it and store it in folder as text file"                    
+
+● Good — that example is more important than it looks, because it reveals
+  something that changes the architecture. Let me make sure I'm reading it
+  right.
+
+  What you just described is not a cron job. It's an event-driven trigger.
+
+  Cron = "run every Monday at 9am" (time-based, scheduled).
+  Your example = "when a new email arrives from X, do Y" (event-based,
+  reactive).
+
+  These are two fundamentally different beasts, and mixing them up will bite
+  you. APScheduler handles the first one cleanly. It cannot handle the second
+  one on its own — because APScheduler only knows about time, not about Gmail
+  inboxes.
+
+  So you actually need two systems working together:
+
+  1. Scheduler (APScheduler) — for time-based jobs:
+  - "Every Monday 9am, summarize my unread emails"
+  - "Every night at 2am, clean up Downloads folder"
+  - "Every Friday, pull latest papers on my thesis topic"
+
+  2. Watchers / Triggers — for event-based jobs:
+  - "When new email arrives from maharshinahar10@gmail.com → draft reply → save
+  as .txt"
+  - "When a file is added to ~/Downloads/Invoices → extract data and log to
+  sheet"
+  - "When a calendar event is 10 minutes away → remind me on phone"
+
+  The clean way to unify these in your head is: both are "automations" from your
+   perspective as a user. You set them in plain English: "if X happens, do Y" or
+   "every X, do Y". Under the hood, the system decides whether to register it
+  with APScheduler (if the trigger is time-based) or with a Watcher (if the
+  trigger is event-based).
+
+  How Watchers actually work — this is the part I want you to pick on:
+
+  For your Gmail example specifically, there are two approaches, and the choice
+  matters because one is clean and one is hacky:
+
+  - A) Polling (simple, works, slightly ugly). Every N minutes (say, 2 minutes),
+   a background task queries the Gmail API: "any new messages from X since last
+  check?" If yes, fires the action. Uses APScheduler itself to run the poll
+  loop. Pros: dead simple, no webhooks, no public URL needed, no Google Cloud
+  Pub/Sub setup. Cons: up to 2-minute delay, wastes API calls when nothing new.
+  For a personal assistant on your laptop, this is totally fine.
+  - B) Gmail Push Notifications (elegant, but painful to set up). Gmail can push
+   notifications to a webhook when new mail arrives. Pros: instant, efficient.
+  Cons: requires Google Cloud Pub/Sub, a publicly reachable HTTPS endpoint (your
+   laptop is behind college WiFi NAT — you'd need ngrok or similar), and Google
+  Cloud project setup. This is a lot of pain for a BTP and your examiner will
+  reasonably ask "why?" and you'll have to explain Pub/Sub.
+
+  My strong recommendation: A (polling). It's honest, it works, it's easy to
+  demo, it fits your self-hosted-on-laptop constraint. You can mention B in your
+   thesis as "future work."
+
+  For filesystem watchers (e.g., "when a file is added to Downloads"), there's a
+   clean library called watchdog — it hooks into OS-level file events (inotify
+  on Linux, ReadDirectoryChangesW on Windows). No polling, native events. This
+  is the standard tool.
+
+  So the revised automation stack looks like:
+
+  - APScheduler → time-based jobs + runs the Gmail/Drive poll loops as scheduled
+   background tasks
+  - watchdog → filesystem event triggers
+  - A unified "Automations" table in SQLite that stores all of them with a
+  common schema: {trigger_type, trigger_config, action_prompt, enabled, 
+  last_run, ...}
+  - One LLM call at creation time parses the natural-language rule into that
+  schema. e.g., "if I get any mail from maharshinahar10@gmail.com then create a 
+  reply for it and store it in folder as text file" → {trigger_type: 
+  "gmail_new_from_sender", trigger_config: {sender: 
+  "maharshinahar10@gmail.com"}, action_prompt: "Draft a reply to this email and 
+  save it as a .txt file in <folder>"}
+  - When a trigger fires, the action_prompt is handed to your LangGraph
+  supervisor as a new task, exactly as if you had typed it in chat. So the
+  automation system reuses the entire agent machinery — no duplicate logic.
+
+  That last point is the key insight and I want to make sure it lands: an 
+  automation is just "a saved prompt that the system types into chat on your 
+  behalf when a condition is met." That's it. No special agent runtime for
+  automations. Whatever your agents can do interactively, they can do
+  automatically. This is a huge simplification and it's a great story for your
+  viva.
+
+  Question 4: Does this "Automations = triggers (time OR event) + saved prompt, 
+  all routed back through the same LangGraph supervisor" model work for you?
+
+  And specifically on Gmail: are you good with polling (option A) as the 
+  approach? Just want to lock this in before I move on, because it affects how
+  we talk about "cron jobs" in the rest of the design.
+
+✻ Sautéed for 36s
+
+❯ qyes 4 :- Yes                                                                 
+  yes option A is fine.                                                         
+
+● Locked in. Now let me zoom out to the part that's been looming: the permission
+   system. This one is subtle and worth getting right because it's one of the
+  most defensible "contributions" in your BTP — examiners love safety/permission
+   stories.
+
+  Question 5: How should the permission system decide what's "sensitive" and 
+  needs your phone approval vs. what's pre-approved?
+
+  Here are the three realistic models. I'll give my recommendation at the end.
+
+  A) Hardcoded allow/deny lists per tool. Each tool is tagged at definition
+  time: read_file = auto, delete_file = ask, send_email = ask, web_search =
+  auto, run_shell_command = ask. Simple, predictable, easy to explain. Downside:
+   inflexible — write_file to ~/scratch/ feels safe but write_file to
+  C:\Windows\ is catastrophic, and a flat tag can't tell them apart.
+
+  B) Tool + argument-aware policies. Each tool has a policy function that
+  inspects the arguments. e.g., write_file(path) auto-approves if path is inside
+   an allowlisted directory (say, ~/BTP-assistant-workspace/), asks otherwise.
+  run_shell_command(cmd) auto-approves if cmd is in a safe list (ls, cat, git 
+  status...), asks otherwise. send_email always asks. delete_file always asks.
+  More nuanced, still predictable, still easy to defend.
+
+  C) Let the LLM decide each time. Ask a cheap model "is this action sensitive?"
+   before every tool call. Do not do this. It's non-deterministic, it's
+  expensive, and it's exactly the kind of thing that blows up in a viva when the
+   examiner asks "what if the LLM gets it wrong and deletes my files?"
+
+  My recommendation: B, with a specific structure that makes it clean in 
+  LangGraph.
+
+  Here's the concrete shape:
+
+  Every tool defines:
+    - name
+    - function
+    - permission_policy(args) -> "auto" | "ask" | "deny"
+
+  Workspace concept:
+    - You pick ONE directory at setup (e.g., E:/BTP-assistant-workspace/)
+    - Read/write/list/delete inside workspace = auto
+    - Any path outside workspace = ask
+    - This single rule kills 90% of the "is this safe?" questions
+
+  Shell commands:
+    - Allowlist of read-only commands = auto (ls, dir, cat, type, git status,
+  git log, git diff, python --version, etc.)
+    - Everything else = ask
+    - Never a denylist — denylists are defeatable ("rm" blocked? use "del".
+  "del" blocked? use python os.remove.)
+
+  Network + external side effects:
+    - web_search, web_fetch = auto
+    - send_email, create_calendar_event, modify_drive_file = ask, always
+    - read_gmail, read_drive, read_calendar = auto (reading isn't destructive)
+
+  Deletes + overwrites:
+    - Delete or overwrite of an existing file = ask, even inside workspace
+    - This protects against the "agent thought a file was trash and nuked your
+  thesis draft" failure mode
+
+  How this wires into LangGraph:
+  LangGraph has a first-class feature called interrupt() (or interrupt_before on
+   specific nodes). When a tool-call node decides its policy is "ask", the graph
+   pauses at that node, the state is checkpointed to SQLite, and your server
+  pushes a notification to your phone over the WebSocket: "Agent wants to run rm
+   thesis.pdf — approve / deny?". You tap approve, the server calls LangGraph's
+  resume with your decision, and the graph picks up exactly where it left off.
+  This is exactly the interrupt pattern LangGraph was built for — it'll look
+  impressive in the viva and it's genuinely the right tool.
+
+  The two important properties of this design:
+
+  1. Automations run under the same policies. If a cron job tries to send an
+  email, it still hits "ask" and pings your phone. You don't get silent
+  dangerous actions just because they were scheduled. (If you want specific
+  automations to pre-approve their own actions, that's a per-automation opt-in
+  flag — not a default.)
+  2. Permission decisions are logged. Every auto-approved and every
+  asked-and-approved action goes into an audit log table. Viva gold: "here's 
+  every action my assistant took on my system, with who approved it and when."
+
+  Question 5: Does this permission model work for you? Specifically:
+  - a) Are you okay with the workspace directory concept (you pick one folder
+  that's "free rein" and anything outside asks)?
+  - b) Shell commands: allowlist auto, everything else ask — good?
+  - c) Should automations inherit the same policies (my rec: yes), or do you
+  want automations to be able to be pre-approved so they don't ping your phone
+  every Monday morning when the email-summary job runs?
+
+  Just say yes/no to each and we'll move on to architecture.
+
+✻ Crunched for 32s
+
+❯ /model 
+  ⎿  Kept model as Opus 4.6 (1M context)
+
+❯ yes                                                                           
+
+● Let me set up tasks for the brainstorming checklist and then move forward.
+
+● Permission model locked in. We've now covered scope, orchestration,
+  automations, and permissions. Before I move to architecture, there are just a
+  couple of remaining areas I need to nail down — then I can present the full
+  design.
+
+  Question 6: Authentication on the login screen — how simple do you want it?
+
+  You said: "the login is just there so if someone stumbles onto the IP address 
+  on the LAN, they can't get in without my credentials." So this is a
+  single-user keep-strangers-out gate, not a real multi-user auth system. Three
+  realistic options:
+
+  A) Single hardcoded username+password from an .env file, hashed with bcrypt, 
+  session cookie after login. No signup flow, no password reset, no user table.
+  You set it once when you install. Server issues a signed session cookie (JWT
+  or itsdangerous-signed) on successful login; phone and laptop both use the
+  cookie. Simplest thing that actually works. My recommendation.
+
+  B) Same as A, but with a TOTP second factor (Google Authenticator). Adds ~30
+  lines of code (pyotp library), and it's a genuinely nice thing to mention in
+  your BTP report as a security measure. Worth considering because college WiFi
+  is not trustworthy and you may want the extra layer.
+
+  C) Full user table with registration, multiple users, roles, etc. Overkill.
+  Skip.
+
+  My rec is A for MVP, with B as a stretch goal you add near the end if time
+  permits. It's literally 30 lines and it makes your viva security story
+  noticeably better.
+
+  One concrete answer I need from you: A, or A+B? (I'll assume A unless you say
+  otherwise — but tell me if you want TOTP in from day one.)
+
+  ---
+  Also, since this is the last clarification round before I move to architecture
+   and start drafting the design doc, let me batch two more small questions so
+  we don't go round-and-round:
+
+  Question 7: Chat persistence — how much history do you want kept?
+
+  - a) All conversations forever, searchable, each conversation is a "thread"
+  like ChatGPT sidebar. (my rec)
+  - b) Only the current conversation, wiped on restart.
+  - c) Last N conversations (e.g., 50) with auto-cleanup.
+
+  Question 8: Voice input — you mentioned "type or maybe even speak." Is voice
+  in scope for v1, or a stretch goal?
+
+  - a) Stretch goal — build the text chat first, add voice later if time
+  permits. (my rec)
+  - b) Must-have for v1 — use the browser's Web Speech API on the phone for
+  speech-to-text, send text to the server.
+  - c) Drop entirely.
+
+  After you answer these three (6, 7, 8), I have everything I need to present
+  the full architecture as a single design pass, then write it to the plan file,
+   then exit plan mode.
+
+● I'll ask questions 6, 7, and 8 in a single batched prompt so we can move
+  forward efficiently.
+● User answered Claude's questions:
+  ⎿  · How should the login / authentication work? → Username + password only 
+     (Recommended)
+     · How much chat history should the system persist? → All conversations 
+     forever, threaded (Recommended)
+     · Is voice input in scope for v1? → Drop entirely
+
+● Locked in. That's everything I need. Now let me present the full architecture
+  in digestible sections, and then I'll write it to the plan file.
+
+  ---
+  Section 1 — System shape at a glance
+
+  One Python process runs on your laptop. That's it. No Docker, no Redis, no
+  RabbitMQ, no microservices. It's a single FastAPI server that holds
+  everything: the LangGraph runtime, the SQLite database, the APScheduler, the
+  watchdog watchers, the WebSocket hub, and it serves both the web UI and the
+  API.
+
+                      ┌─────────────────────────────────────────┐
+                      │        Your laptop (single process)     │
+  ┌──────────┐        │                                         │
+  │  Phone   │──HTTP──┤  FastAPI                                │
+  │ (browser)│  +WS   │   ├── /  → UI (auto-detect phone/desktop│
+  └──────────┘        │   ├── /api/chat, /api/automations, ...  │
+                      │   └── /ws  → live agent status          │
+  ┌──────────┐        │                                         │
+  │ Laptop   │──HTTP──┤  LangGraph supervisor (async)           │
+  │ browser  │  +WS   │   └─ spawns worker agents in parallel   │
+  └──────────┘        │      ├─ interrupt() on sensitive tools  │
+                      │      └─ streams events to WS hub        │
+                      │                                         │
+                      │  SQLite (single file)                   │
+                      │   ├─ users / sessions                   │
+                      │   ├─ chat threads + messages            │
+                      │   ├─ langgraph checkpoints              │
+                      │   ├─ automations (triggers + actions)   │
+                      │   ├─ permission audit log               │
+                      │   └─ oauth tokens (encrypted at rest)   │
+                      │                                         │
+                      │  APScheduler (in-process)               │
+                      │   ├─ time-based cron jobs               │
+                      │   └─ Gmail/Drive poll loops             │
+                      │                                         │
+                      │  watchdog (in-process)                  │
+                      │   └─ filesystem event triggers          │
+                      └─────────────────────────────────────────┘
+
+  Why this shape: single-user, single-machine, everything shares memory —
+  bringing in brokers or extra services would be architectural theater.
+  LangGraph already does the parallelism natively via asyncio; SQLite handles
+  all our persistence; FastAPI's WebSockets handle live updates. The whole
+  system starts with one command: python -m assistant.
+
+  Does this top-level shape look right? If yes I'll go into Section 2 (the agent
+   layer, which is the meat of the project). If anything here feels off, say so
+  now.
+
+✻ Churned for 1m 4s
+
+❯ create a full plan and store in a file, as i will do development work using   
+  sonnet, also mention phases in it, and ways to use this plan.                 
+
+● Got it. I'll write the full plan to the plan file now. Since you're going to
+  execute this with Sonnet, I'll structure it as a phased, self-contained,
+  executable document with clear usage instructions at the top.
+
+● Updated plan
+  ⎿  PreToolUse:Write hook error
+  ⎿  /plan to preview
+  ⎿  PostToolUse:Write hook error
+
+● Plan written. Here's what's in it and how to use it.
+
+  What's in the file (C:\Users\mahar\.claude\plans\fizzy-beaming-hollerith.md):
+
+  1. How to use this plan — session protocol for handing phases to Sonnet, rules
+   Sonnet must follow, how to resume after breaks.
+  2. Context — why the project exists, design principles, non-negotiables.
+  3. Final architecture — locked tech stack, data model, permission model, agent
+   architecture, automations model, and in/out-of-scope lists.
+  4. 11 phases (0 through 10), each with goal, deliverables, verification
+  checklist, and commit message. Each phase is sized for one Sonnet session and
+  ends in a runnable, committable state.
+  5. Post-v1 backlog — explicitly deferred items so you don't build them now.
+  6. Critical files reference + final reminders (security, scope discipline,
+  verification).
+
+  The phase arc:
+  - P0–P2: scaffolding, auth, chat UI (no AI yet)
+  - P3: one-shot OpenAI chat
+  - P4: replace with LangGraph runtime
+  - P5: real tools (fs/shell/web) workspace-scoped
+  - P6: permission system with phone approval via LangGraph interrupt()
+  - P7: dynamic multi-agent (supervisor + parallel workers, bounded)
+  - P8: Gmail/Drive/Calendar via OAuth
+  - P9: natural-language automations (cron + gmail poll + fs watch), all routed
+  back through the supervisor
+  - P10: polish, observability panel, audit viewer, demo-ready
+
+  How to actually start development (when you open a new Sonnet session):
+
+  Read C:\Users\mahar\.claude\plans\fizzy-beaming-hollerith.md in full,
+  then execute Phase 0. Do not start Phase 1 without my approval.
+
+  Sonnet will read the plan, do Phase 0, run the verification checklist, paste
+  results, and stop. You commit, review, and start the next session with
+  "execute Phase 1". Repeat until v1 is done.
+  ⎿  User rejected Claude's plan:
+     ╭──────────────────────────────────────────────────────────────────────────
+     │ Personal AI Assistant — BTP Project Plan
+     │
+     │ Owner: Maharshi
+     │ Project dir: E:\BTP project\
+     │ Plan created: 2026-04-10
+     │ Intended executor: Claude Sonnet (development work)
+     │
+     │ ---
+     │ How to use this plan
+     │
+     │ This plan is written so you can hand it to Claude Sonnet in a fresh
+     │ session and have it execute one phase at a time, with you reviewing
+     │ between phases. Read this section before starting.
+     │
+     │ Session protocol for executing this plan
+     │
+     │ 1. Start a new Sonnet session in E:\BTP project\.
+     │ 2. First message to Sonnet: Read 
+     │ C:\Users\mahar\.claude\plans\fizzy-beaming-hollerith.md in full, then 
+     │ execute Phase <N>. Do not start Phase <N+1> without my approval.
+     │ 3. One phase per session is the default. Each phase below is sized to fit
+     │  comfortably in one working session with review time. Do not let Sonnet
+     │ chain phases without you checking in.
+     │ 4. After every phase, Sonnet must run the phase's Verification checklist
+     │ and paste the results to you before claiming completion.
+     │ 5. Between phases, you commit to git. Each phase ends in a committable
+     │ state. Never start a new phase on top of uncommitted code from a prior
+     │ phase.
+     │ 6. If a phase goes sideways, tell Sonnet to stop, revert with git reset 
+     │ --hard HEAD, and restart the phase. Don't let half-finished phases pile
+     │ up.
+     │
+     │ Rules for Sonnet while executing any phase
+     │
+     │ - Scope discipline: Do not add features not listed in the current phase.
+     │ Future phases exist; don't front-run them.
+     │ - No new dependencies beyond what this plan specifies without asking
+     │ Maharshi first.
+     │ - SQLite only for persistence. Do not introduce Redis, RabbitMQ,
+     │ Postgres, or any other DB.
+     │ - Single process only. No Docker, no multi-service deployment, no
+     │ workers-as-separate-processes.
+     │ - LangGraph is the agent runtime. Do not invent parallel orchestration
+     │ logic outside LangGraph.
+     │ - Verification before completion: Run the verification commands in the
+     │ phase and paste output. No "should work" claims.
+     │ - Commit at phase end with the message format: phase <N>: <short 
+     │ summary>.
+     │
+     │ How to resume after a break
+     │
+     │ - git log --oneline to see which phase was last committed.
+     │ - Re-open this plan, find the next phase, start a new Sonnet session with
+     │  the protocol above.
+     │
+     │ ---
+     │ Context — Why this project exists
+     │
+     │ Maharshi is building a self-hosted personal AI assistant as his B.Tech
+     │ Project (BTP). The machine that runs it is his own laptop; the primary
+     │ way he interacts with it is from his phone on college WiFi by typing the
+     │ laptop's LAN IP into a browser. The system is single-user (only Maharshi
+     │ uses it) and the login exists only to keep random LAN users out.
+     │
+     │ The BTP's core contribution is a dynamic multi-agent orchestration system
+     │  (built on LangGraph) that gives the assistant "hands" on the laptop —
+     │ real access to the filesystem, terminal, Gmail, Google Drive, and Google
+     │ Calendar — with a safety-first permission model that routes sensitive
+     │ actions through phone approval.
+     │
+     │ The assistant must also support automations: natural-language "if X then
+     │ Y" and "every X do Y" rules that reuse the same agent runtime so anything
+     │  the user can do interactively in chat, the system can do automatically
+     │ on a schedule or on an event.
+     │
+     │ Design principles (these are non-negotiable)
+     │
+     │ 1. Single process, single machine, single user. No distributed anything.
+     │ 2. LangGraph is the agent runtime. Use its built-in streaming,
+     │ checkpointing, and interrupt features rather than reinventing them.
+     │ 3. Everything flows through the graph. Automations, chat messages, and
+     │ retries all become invocations of the same LangGraph supervisor. No
+     │ parallel "automation runtime" living outside the graph.
+     │ 4. Workspace + allowlists for safety. Safety is enforced by policies on
+     │ tool arguments, not by asking an LLM whether something is safe.
+     │ 5. YAGNI hard. If a feature isn't listed in a phase, it isn't in scope
+     │ yet.
+     │
+     │ ---
+     │ Final architecture (locked)
+     │
+     │ High-level shape
+     │
+     │                     ┌─────────────────────────────────────────┐
+     │                     │        Laptop (single Python process)   │
+     │ ┌──────────┐        │                                         │
+     │ │  Phone   │──HTTP──┤  FastAPI                                │
+     │ │ (browser)│  +WS   │   ├── /  → UI (auto-detect phone/desk)  │
+     │ └──────────┘        │   ├── /api/* (chat, automations, ...)   │
+     │                     │   └── /ws  → live agent status          │
+     │ ┌──────────┐        │                                         │
+     │ │ Laptop   │──HTTP──┤  LangGraph supervisor (async)           │
+     │ │ browser  │  +WS   │   └─ spawns worker agents in parallel   │
+     │ └──────────┘        │      ├─ interrupt() on sensitive tools  │
+     │                     │      └─ streams events to WS hub        │
+     │                     │                                         │
+     │                     │  SQLite (single file)                   │
+     │                     │  APScheduler (time jobs + Gmail poll)   │
+     │                     │  watchdog (filesystem triggers)         │
+     │                     └─────────────────────────────────────────┘
+     │
+     │ Tech stack (locked — do not substitute)
+     │
+     │
+     │
+     │ ┌───────────────┬───────────────────────────┬────────────────────────────
+     │ ┐
+     │ │    Concern    │          Choice           │            Why
+     │ │
+     │ ├───────────────┼───────────────────────────┼────────────────────────────
+     │ ┤
+     │ │ Language      │ Python 3.11+              │ LangGraph is Python-first
+     │ │
+     │ ├───────────────┼───────────────────────────┼────────────────────────────
+     │ ┤
+     │ │ Web framework │ FastAPI                   │ Async, WebSocket-native,
+     │ │
+     │ │               │                           │ clean DI
+     │ │
+     │ ├───────────────┼───────────────────────────┼────────────────────────────
+     │ ┤
+     │ │ Agent runtime │ LangGraph                 │ Stateful graph, streaming,
+     │ │
+     │ │               │                           │  interrupts, checkpointer
+     │ │
+     │ ├───────────────┼───────────────────────────┼────────────────────────────
+     │ ┤
+     │ │ LLM provider  │ OpenAI (GPT family)       │ User has only this API key
+     │ │
+     │ ├───────────────┼───────────────────────────┼────────────────────────────
+     │ ┤
+     │ │               │                           │ Single-user,
+     │ │
+     │ │ DB            │ SQLite (via SQLAlchemy)   │ single-machine —
+     │ │
+     │ │               │                           │ sufficient
+     │ │
+     │ ├───────────────┼───────────────────────────┼────────────────────────────
+     │ ┤
+     │ │ Agent state   │ LangGraph SqliteSaver     │ Built-in, survives
+     │ │
+     │ │ persistence   │                           │ restarts
+     │ │
+     │ ├───────────────┼───────────────────────────┼────────────────────────────
+     │ ┤
+     │ │ Scheduling    │ APScheduler               │ In-process, persists to
+     │ │
+     │ │               │                           │ SQLite, no broker
+     │ │
+     │ ├───────────────┼───────────────────────────┼────────────────────────────
+     │ ┤
+     │ │ Filesystem    │ watchdog                  │ OS-native events,
+     │ │
+     │ │ events        │                           │ cross-platform
+     │ │
+     │ ├───────────────┼───────────────────────────┼────────────────────────────
+     │ ┤
+     │ │ Auth          │ bcrypt + signed session   │ Single user, simplest
+     │ │
+     │ │               │ cookie                    │ thing that works
+     │ │
+     │ ├───────────────┼───────────────────────────┼────────────────────────────
+     │ ┤
+     │ │               │ Vanilla HTML + HTMX +     │ No build step; phone and
+     │ │
+     │ │ Frontend      │ Tailwind                  │ desktop both render
+     │ │
+     │ │               │                           │ cleanly
+     │ │
+     │ ├───────────────┼───────────────────────────┼────────────────────────────
+     │ ┤
+     │ │               │                           │ One hub broadcasts
+     │ │
+     │ │ Live updates  │ FastAPI WebSockets        │ LangGraph events to
+     │ │
+     │ │               │                           │ connected clients
+     │ │
+     │ ├───────────────┼───────────────────────────┼────────────────────────────
+     │ ┤
+     │ │ Google APIs   │ google-api-python-client  │ Official SDK
+     │ │
+     │ ├───────────────┼───────────────────────────┼────────────────────────────
+     │ ┤
+     │ │ Secrets       │ .env via python-dotenv    │ Simplest
+     │ │
+     │ └───────────────┴───────────────────────────┴────────────────────────────
+     │ ┘
+     │
+     │ Data model (SQLite tables)
+     │
+     │ - users — single row; username, password_hash
+     │ - sessions — token, created_at, expires_at
+     │ - threads — chat conversations; id, title, created_at, model
+     │ - messages — id, thread_id, role, content, created_at, metadata_json
+     │ - langgraph_checkpoints — managed by LangGraph's SqliteSaver
+     │ - automations — id, name, trigger_type, trigger_config_json,
+     │ action_prompt, enabled, last_run_at, created_at
+     │ - automation_runs — id, automation_id, started_at, finished_at, status,
+     │ thread_id
+     │ - permission_audit — id, tool_name, args_json, decision
+     │ (auto/approved/denied), decided_by (policy/user), decided_at, thread_id
+     │ - oauth_tokens — provider (google), token_json (encrypted at rest with
+     │ Fernet), refreshed_at
+     │
+     │ Permission model (locked)
+     │
+     │ - Workspace directory chosen at setup (e.g.,
+     │ E:\BTP-assistant-workspace\). Reads/writes/lists inside → auto. Anything
+     │ outside → ask.
+     │ - Deletes and overwrites of existing files → always ask, even inside
+     │ workspace.
+     │ - Shell commands: allowlist auto (ls, dir, cat, type, git status, git 
+     │ log, git diff, python --version, etc.). Everything else → ask. Allowlist 
+     │ only, never denylist.
+     │ - Network reads (web search, web fetch, Gmail/Drive/Calendar reads) →
+     │ auto.
+     │ - Network writes (send email, create/modify Drive files, create calendar
+     │ events) → always ask.
+     │ - LangGraph interrupt() is used to pause the graph on "ask" decisions;
+     │ the server pushes a WebSocket notification, the user taps approve/deny on
+     │  the phone, the server resumes the graph with the decision.
+     │ - Every decision is logged in permission_audit regardless of outcome.
+     │ - Automations inherit the same policies. An automation firing at 9am that
+     │  wants to send an email will still trigger a phone approval prompt. No
+     │ silent dangerous actions.
+     │
+     │ Agent architecture (locked)
+     │
+     │ - Hierarchical supervisor + workers on LangGraph.
+     │ - Top-level supervisor: receives the user's message, decides to (a)
+     │ handle it directly with tools, or (b) decompose into subtasks and spawn
+     │ worker agents.
+     │ - Workers: each worker is itself a ReAct-style agent with tool access.
+     │ Workers may request more sub-workers via the supervisor (not directly) —
+     │ bounded.
+     │ - Bounds (hardcoded, non-negotiable):
+     │   - Max recursion depth: 3
+     │   - Max total agents per user task: 10
+     │   - Max total tool calls per user task: 50
+     │   - Max wall-clock per user task: 10 minutes
+     │ - Every agent is a node in the same graph. No agents run "outside" the
+     │ graph; this is what makes the observability panel universal.
+     │ - Streaming: the server subscribes to LangGraph's event stream and
+     │ forwards node-start / node-end / tool-call / tool-result events to a
+     │ WebSocket hub. The phone/desktop UI renders a live "agent roster" panel
+     │ from these events.
+     │
+     │ Automations model (locked)
+     │
+     │ - One table, two trigger kinds: trigger_type is either cron (time-based)
+     │ or event (Gmail poll, filesystem watch).
+     │ - At creation time, one LLM call parses the natural-language rule into
+     │ {trigger_type, trigger_config, action_prompt} which is stored verbatim.
+     │ - APScheduler runs all cron jobs and also runs Gmail poll loops (every 2
+     │ minutes per watched sender) as scheduled background tasks.
+     │ - watchdog runs filesystem watchers.
+     │ - When a trigger fires, the action_prompt is fed to the LangGraph
+     │ supervisor as if the user had typed it, creating a new thread tagged
+     │ automation_run. The permission system still applies.
+     │
+     │ Scope of v1 features (locked)
+     │
+     │ In scope:
+     │ - Single-user login (username + password, bcrypt, session cookie)
+     │ - ChatGPT-style threaded chat UI, phone + desktop layouts from one
+     │ codebase
+     │ - All chat history persisted forever, searchable from sidebar
+     │ - Multi-agent supervisor + worker orchestration on LangGraph (dynamic
+     │ graph, bounded)
+     │ - Tools: filesystem (read/write/list/delete, workspace-aware), shell
+     │ (allowlist-aware), web search, web fetch, Gmail (read/send), Drive
+     │ (read/write), Calendar (read/create)
+     │ - Permission system with phone approval for sensitive ops
+     │ - Live agent status panel (status cards, not log streams)
+     │ - Model switcher (GPT-4o, GPT-4o-mini, GPT-4-turbo, configurable list)
+     │ - Natural-language automations (cron + Gmail-new-from-sender + filesystem
+     │  watch)
+     │ - Permission audit log viewable in UI
+     │
+     │ Explicitly out of scope for v1 (revisit only after v1 is fully working):
+     │ - Voice input
+     │ - TOTP / 2FA
+     │ - Multi-user support
+     │ - Gmail push notifications (Pub/Sub) — we use polling
+     │ - Internet exposure / tunneling — LAN only
+     │ - Remote access from outside college WiFi
+     │ - Any non-OpenAI model providers
+     │ - Docker / containerization
+     │ - Mobile native app — browser only
+     │
+     │ ---
+     │ Phases
+     │
+     │ Each phase is self-contained and ends in a committable, runnable state.
+     │ Do one per session. Verify before moving on.
+     │
+     │ ---
+     │ Phase 0 — Project skeleton & dev loop
+     │
+     │ Goal: A runnable empty FastAPI app, a working SQLite connection, and a
+     │ clean directory layout. No AI yet.
+     │
+     │ Deliverables:
+     │ - pyproject.toml or requirements.txt pinning: fastapi, uvicorn[standard],
+     │  sqlalchemy, aiosqlite, python-dotenv, bcrypt, itsdangerous, jinja2,
+     │ python-multipart.
+     │ - Directory layout:
+     │ E:\BTP project\
+     │   app\
+     │     __init__.py
+     │     main.py              # FastAPI app entrypoint
+     │     config.py            # settings from .env
+     │     db\
+     │       __init__.py
+     │       engine.py          # SQLAlchemy async engine
+     │       models.py          # empty for now
+     │     web\
+     │       __init__.py
+     │       routes\
+     │         __init__.py
+     │         health.py        # GET /health → {"status": "ok"}
+     │       templates\
+     │         base.html
+     │         index.html       # "Hello from BTP assistant"
+     │       static\
+     │   .env.example
+     │   .gitignore
+     │   README.md              # one-paragraph description + run command
+     │ - GET / renders index.html.
+     │ - GET /health returns {"status": "ok"}.
+     │ - python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+     │ starts the server.
+     │
+     │ Verification:
+     │ - curl http://localhost:8000/health → {"status":"ok"}
+     │ - Open http://localhost:8000/ in a browser → renders the index page.
+     │ - From Maharshi's phone on the same WiFi, visit
+     │ http://<laptop-lan-ip>:8000/ → same page loads.
+     │ - git status clean after commit.
+     │
+     │ Commit: phase 0: project skeleton and dev loop
+     │
+     │ ---
+     │ Phase 1 — Auth + single-user login gate
+     │
+     │ Goal: Nobody reaches the app without logging in. One user, bcrypt-hashed
+     │ password from .env.
+     │
+     │ Deliverables:
+     │ - users and sessions tables created via SQLAlchemy migrations (or
+     │ Base.metadata.create_all for simplicity).
+     │ - On first startup: if no user exists, read ADMIN_USERNAME and
+     │ ADMIN_PASSWORD from .env, hash with bcrypt, insert.
+     │ - GET /login → login form.
+     │ - POST /login → verifies, issues signed session cookie via itsdangerous,
+     │ redirects to /.
+     │ - POST /logout → clears cookie.
+     │ - FastAPI dependency require_user() that reads the cookie, validates,
+     │ loads user, or redirects to /login.
+     │ - All routes except /login and /health require auth.
+     │
+     │ Verification:
+     │ - curl http://localhost:8000/ without cookie → 302 to /login.
+     │ - Login with correct creds → redirected to /, now reachable.
+     │ - Login with wrong creds → error message on login page.
+     │ - Cookie signed; tampering invalidates session.
+     │ - Restart server; cookie still valid until expiry.
+     │
+     │ Commit: phase 1: single-user login with bcrypt + session cookies
+     │
+     │ ---
+     │ Phase 2 — Chat UI shell (no AI yet)
+     │
+     │ Goal: A ChatGPT-style interface that works on phone and desktop, with
+     │ threads persisted to SQLite, but the "assistant" responses are stubbed
+     │ (echoes).
+     │
+     │ Deliverables:
+     │ - threads and messages tables.
+     │ - GET / → chat UI. Sidebar lists threads; main pane shows active thread.
+     │ - POST /api/threads → creates a new thread.
+     │ - GET /api/threads/:id/messages → returns messages.
+     │ - POST /api/threads/:id/messages → saves user message, generates a stub
+     │ "echo" assistant reply, returns both.
+     │ - UI is built with HTMX + Tailwind. Mobile-responsive: sidebar collapses
+     │ on narrow screens.
+     │ - Model switcher dropdown (displayed but non-functional — stores
+     │ selection on thread only).
+     │ - History: infinite retention, no auto-cleanup.
+     │
+     │ Verification:
+     │ - Create a thread on desktop, send a message, see echo reply, refresh
+     │ page, thread + messages still there.
+     │ - Open same URL from phone, see the thread in sidebar, can send messages.
+     │ - Second thread can be created and switched between without mixing
+     │ messages.
+     │ - DB row count matches UI.
+     │
+     │ Commit: phase 2: chat UI with threaded history (stub responses)
+     │
+     │ ---
+     │ Phase 3 — Single LLM call behind the chat (no agents yet)
+     │
+     │ Goal: Chat actually talks to OpenAI. One user message → one OpenAI call →
+     │  streamed response. No tools, no agents. This is the smallest possible
+     │ thing that proves the LLM loop works end-to-end.
+     │
+     │ Deliverables:
+     │ - OPENAI_API_KEY in .env.
+     │ - POST /api/threads/:id/messages now calls OpenAI (model chosen from
+     │ thread's model field) with the full message history for that thread.
+     │ - Response is streamed back to the client over a WebSocket or SSE (pick
+     │ WebSocket — we'll reuse the connection for agent events later).
+     │ - UI shows tokens appearing live.
+     │ - Model switcher actually switches models on the thread.
+     │
+     │ Verification:
+     │ - Send "hello" → receive a real GPT reply, streamed.
+     │ - Send "what did I just say?" in the same thread → model sees history,
+     │ answers correctly.
+     │ - Switch model mid-conversation → next reply uses the new model.
+     │ - Invalid API key → clear error in UI, no crash.
+     │
+     │ Commit: phase 3: streaming OpenAI chat over websockets
+     │
+     │ ---
+     │ Phase 4 — LangGraph supervisor (single agent, no tools)
+     │
+     │ Goal: Replace the direct OpenAI call with a LangGraph graph. Still one
+     │ agent, still no tools — but now the runtime is LangGraph and we're
+     │ streaming node events instead of raw tokens.
+     │
+     │ Deliverables:
+     │ - Add langgraph, langchain-openai to deps.
+     │ - app/agents/supervisor.py defines a minimal LangGraph StateGraph with
+     │ one node (chat) that calls OpenAI.
+     │ - SqliteSaver checkpointer wired to the same SQLite file.
+     │ - The chat endpoint now invokes graph.astream_events(...) and forwards
+     │ events to the WebSocket.
+     │ - UI now has a collapsed "agents" panel that shows "supervisor —
+     │ thinking..." → "supervisor — done" based on node events. It's minimal for
+     │  now but plumbed end-to-end.
+     │
+     │ Verification:
+     │ - Chat still works identically from the user's perspective.
+     │ - The agents panel shows the supervisor node entering and exiting on each
+     │  turn.
+     │ - Kill the server mid-response → restart → the checkpoint is there in
+     │ SQLite (even if the in-flight generation is lost).
+     │
+     │ Commit: phase 4: langgraph supervisor with streaming events
+     │
+     │ ---
+     │ Phase 5 — Tools: filesystem + shell + web (workspace-aware, no 
+     │ permissions yet)
+     │
+     │ Goal: Give the supervisor real tools. Workspace directory is respected.
+     │ No permission prompts yet — everything inside workspace is auto,
+     │ everything outside just errors. We add real permission gating in Phase 6.
+     │
+     │ Deliverables:
+     │ - WORKSPACE_DIR in .env, created on startup if missing.
+     │ - app/tools/filesystem.py: read_file, write_file, list_dir, delete_file.
+     │ All take paths and raise OutsideWorkspaceError if path is outside
+     │ workspace.
+     │ - app/tools/shell.py: run_shell_command with allowlist (ls, dir, cat,
+     │ type, git status, git log, git diff, python --version, pwd, whoami,
+     │ echo). Anything else raises NotAllowlistedError.
+     │ - app/tools/web.py: web_search (use DuckDuckGo via ddgs library — no API
+     │ key needed), web_fetch (httpx + readability).
+     │ - Tools are registered with LangGraph via the standard ToolNode pattern.
+     │ Supervisor becomes a ReAct agent that can call them.
+     │ - Agents panel now shows tool calls as they happen: "supervisor →
+     │ list_dir(./) → done".
+     │
+     │ Verification:
+     │ - "List the files in my workspace" → correct output.
+     │ - "Read the contents of README.md in my workspace" → correct output.
+     │ - "Delete all files" → tool errors; assistant reports the error (no
+     │ prompt yet, that's next phase).
+     │ - "Run rm -rf /" → blocked by allowlist, assistant explains.
+     │ - "Search the web for langgraph docs" → returns results.
+     │ - Agents panel shows each tool call and its outcome.
+     │
+     │ Commit: phase 5: workspace-aware tools (fs, shell allowlist, web)
+     │
+     │ ---
+     │ Phase 6 — Permission system with phone approval
+     │
+     │ Goal: Sensitive tool calls pause the graph via LangGraph interrupt(),
+     │ push a notification over WebSocket, and wait for approval.
+     │
+     │ Deliverables:
+     │ - app/permissions/policy.py: one function per tool returning "auto" | 
+     │ "ask" based on args.
+     │ - Wrap every tool so that before execution it consults the policy.
+     │ - If "ask": call LangGraph interrupt({"tool": ..., "args": ..., "prompt":
+     │  "..."}). The graph pauses and checkpoints.
+     │ - Server catches the interrupt, pushes a WebSocket message to the active
+     │ client: {type: "permission_request", id, tool, args, prompt}.
+     │ - UI (phone and desktop) renders an inline Approve / Deny card in the
+     │ chat.
+     │ - On approve/deny, UI posts to POST /api/permissions/:id with the
+     │ decision. Server resumes the graph via graph.ainvoke(None, config={...})
+     │ passing the decision.
+     │ - Every request + decision logged to permission_audit.
+     │ - Hardcoded policies (exactly as specified in the Permission Model
+     │ section above).
+     │
+     │ Verification:
+     │ - "Delete README.md from workspace" → approval card appears on phone; tap
+     │  approve → file deleted; tap deny → assistant reports denial.
+     │ - Refresh the phone mid-approval → upon reconnect, the pending request is
+     │  re-sent (from the checkpoint).
+     │ - "Run rm -rf ." → still blocked by allowlist before policy even fires
+     │ (defense in depth).
+     │ - permission_audit table has rows for every decision.
+     │
+     │ Commit: phase 6: permission system with websocket approval flow
+     │
+     │ ---
+     │ Phase 7 — Dynamic multi-agent orchestration (supervisor + workers)
+     │
+     │ Goal: Supervisor can decompose a task and spawn parallel worker agents.
+     │ Workers run concurrently. Bounds enforced.
+     │
+     │ Deliverables:
+     │ - Supervisor node gains a spawn_worker(task_description, tools_allowed)
+     │ tool.
+     │ - A separate worker subgraph: a ReAct agent with its own tool set, runs
+     │ as a LangGraph subgraph invocation.
+     │ - Supervisor runs workers in parallel via asyncio.gather, each as a
+     │ separate LangGraph subgraph invocation. Workers stream their own node
+     │ events.
+     │ - Recursion depth, total-agent, total-tool-call, and wall-clock bounds
+     │ enforced in a central RunContext object passed through graph state.
+     │ - Agents panel now shows a tree: supervisor with worker children, each
+     │ with status (queued / running / done / failed), a one-line description of
+     │  what they're doing, and a tool-call count.
+     │ - If a worker wants to spawn its own sub-worker, it must request it via
+     │ the supervisor (not directly).
+     │
+     │ Verification:
+     │ - "Search the web for three Python web frameworks, summarize each, and
+     │ write a comparison to comparison.md in my workspace." → supervisor spawns
+     │  3+ workers in parallel (visible in panel) → comparison file written →
+     │ approval prompted for the write.
+     │ - Bounds: a prompt engineered to blow past the 10-agent cap → stops at 10
+     │  with a clean error in the chat.
+     │ - Wall-clock: 10-minute timeout enforced (test with a short override).
+     │ - Killing the server mid-run → restart → graph state is checkpointed, but
+     │  the in-flight run is reported as failed in the UI (this is fine for v1).
+     │
+     │ Commit: phase 7: dynamic multi-agent orchestration with bounds
+     │
+     │ ---
+     │ Phase 8 — Google integrations (Gmail, Drive, Calendar)
+     │
+     │ Goal: Real OAuth flow to connect Maharshi's Google account, then
+     │ Gmail/Drive/Calendar tools available to agents.
+     │
+     │ Deliverables:
+     │ - GET /settings/google/connect → starts Google OAuth flow (desktop app
+     │ credentials, localhost redirect on port 8000).
+     │ - Scopes requested: gmail.readonly, gmail.send, drive, calendar.
+     │ - Tokens stored encrypted (Fernet) in oauth_tokens table.
+     │ - Tools:
+     │   - gmail_list_unread(max), gmail_read(message_id), gmail_search(query),
+     │ gmail_send(to, subject, body) — send is always "ask".
+     │   - drive_list(folder_id), drive_read(file_id), drive_write(folder_id, 
+     │ name, content) — write is always "ask".
+     │   - calendar_list_events(time_range), calendar_create_event(...) — create
+     │  is always "ask".
+     │ - Settings page shows connection status + "disconnect" button.
+     │
+     │ Verification:
+     │ - Connect Google account → tokens saved → /settings shows "connected".
+     │ - "Summarize my 5 most recent unread emails" → works without approval
+     │ (read-only).
+     │ - "Send a test email to me saying hello" → approval prompt → approve →
+     │ email arrives.
+     │ - "What's on my calendar tomorrow?" → works.
+     │ - Disconnect → tools fail with a clear message instructing the user to
+     │ reconnect.
+     │
+     │ Commit: phase 8: google oauth + gmail/drive/calendar tools
+     │
+     │ ---
+     │ Phase 9 — Automations (cron + gmail-from-sender + filesystem watch)
+     │
+     │ Goal: Natural-language automations that route back through the
+     │ supervisor.
+     │
+     │ Deliverables:
+     │ - automations and automation_runs tables.
+     │ - app/automations/parser.py: one OpenAI call, structured-output, that
+     │ converts NL → {trigger_type, trigger_config, action_prompt}. Supported
+     │ trigger_type:
+     │   - cron (config: cron expression or preset like "every monday 9am")
+     │   - gmail_new_from_sender (config: {sender})
+     │   - fs_new_in_folder (config: {folder})
+     │ - app/automations/runtime.py:
+     │   - Registers all cron automations with APScheduler on startup.
+     │   - Registers one APScheduler poll loop per gmail_new_from_sender
+     │ automation (2-minute interval); tracks last_seen_message_id per sender.
+     │   - Registers a watchdog observer per fs_new_in_folder folder.
+     │ - When a trigger fires: creates a new thread tagged automation_run=<id>,
+     │ injects action_prompt as the first message, runs it through the
+     │ supervisor exactly like a user message. Permission policies still apply.
+     │ - /automations UI: list, create (NL input), enable/disable, delete, and
+     │ view recent runs (each run links to its thread so Maharshi can see what
+     │ happened).
+     │
+     │ Verification:
+     │ - Create: "Every minute, write the current time to heartbeat.txt in my
+     │ workspace." → runs → file updated every minute. (Use 1-minute interval
+     │ for testing, then disable.)
+     │ - Create: "When I get a new email from maharshinahar10@gmail.com, draft a
+     │  reply and save it as a .txt file in my workspace." → send a test email
+     │ from that address → within ~2 min, a new thread appears with the
+     │ automation run, a draft file is created (after approval).
+     │ - Create: "When a new file is added to <workspace>/inbox, summarize it."
+     │ → drop a file → automation fires → summary appears in a thread.
+     │ - Disable an automation → it stops firing immediately.
+     │ - Server restart → all automations reload from DB and resume.
+     │
+     │ Commit: phase 9: natural-language automations (cron, gmail poll, fs 
+     │ watch)
+     │
+     │ ---
+     │ Phase 10 — Polish, observability panel, and audit viewer
+     │
+     │ Goal: Make it demo-ready for the viva. No new features; only clarity.
+     │
+     │ Deliverables:
+     │ - Agents panel refined: tree view with colored status badges, collapsible
+     │  workers, current-action text ("searching web for 'x'", "writing
+     │ comparison.md"), tool-call counter, wall-clock. Live updates smoothly via
+     │  WebSocket.
+     │ - Permission audit viewer at /audit: paginated table of every
+     │ auto/approved/denied decision with tool name, args (truncated),
+     │ timestamp, linked thread.
+     │ - Settings page: model list (editable from UI), workspace directory
+     │ (read-only display), Google connection status, change-password form.
+     │ - Error handling pass: every tool wraps exceptions into user-friendly
+     │ error messages; no Python tracebacks reach the UI.
+     │ - README updated with: project overview, architecture diagram (ASCII),
+     │ setup instructions, run command, Google OAuth setup steps, screenshots.
+     │ - seed_demo.py script that creates a couple of sample threads and
+     │ automations for demo day.
+     │
+     │ Verification:
+     │ - Cold-run the setup from the README on a clean checkout — does it work?
+     │ - Demo scenario 1: on phone, ask "search the web for three langgraph
+     │ tutorials, summarize them, and save the summary to my workspace." Panel
+     │ shows 3 workers in parallel. Save is approved from the phone. Works
+     │ end-to-end.
+     ╰──────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+❯ you created this plan, now how i will start implementing ? like paste         
+  something in new chat ? or create a plan.md file and tell (int new chat)      
+  sonnet to read that plan file and implement phase - X ?                       
+
+● Both work, but the second way is much better for this project. Here's why and
+  exactly how to do it.
+
+  Recommended: keep the plan as a file, reference it by path
+
+  The plan already lives at
+  C:\Users\mahar\.claude\plans\fizzy-beaming-hollerith.md. Don't copy-paste its
+  contents into new chats — that wastes context, risks drift if you edit the
+  plan later, and makes it easy to accidentally feed Sonnet a stale version.
+
+  Instead, in every new Sonnet session just tell it to read the file. One source
+   of truth, always up to date.
+
+  Exact workflow
+
+  Step 1 — Move the plan to the project (optional but recommended).
+
+  The plan is currently in your Claude plans folder. I'd suggest copying it into
+   the project itself so it's version-controlled alongside the code:
+
+  E:\BTP project\docs\plan.md
+
+  Reasons: (a) it gets committed to git so every commit is tied to the plan
+  version it was built against, (b) Sonnet finds it instantly without needing
+  the full Windows path, (c) if you ever share the repo or open it on another
+  machine, the plan travels with it.
+
+  If you want to do that, just copy the file there before your first Sonnet
+  session. Otherwise keep using the current path — both work.
+
+  Step 2 — Open a fresh Sonnet session in E:\BTP project\.
+
+  Step 3 — First message of the session (copy-paste this, edit the phase 
+  number):
+
+  Read docs/plan.md in full before doing anything else.
+
+  Then execute Phase 0 exactly as specified. Follow all the rules in the
+  "How to use this plan" and "Rules for Sonnet while executing any phase"
+  sections. Run the verification checklist at the end and paste the output
+  to me. Do not start Phase 1. Do not commit until I approve.
+
+  (If you kept the plan at the original path, replace docs/plan.md with
+  C:\Users\mahar\.claude\plans\fizzy-beaming-hollerith.md.)
+
+  Step 4 — Sonnet runs the phase, pastes verification output, stops.
+
+  Step 5 — You review, then tell it to commit:
+
+  Looks good. Commit with the message from the plan.
+
+  Step 6 — End the session. Close the chat or run /clear.
+
+  Step 7 — Start a new session for the next phase. Same template, bump the phase
+   number:
+
+  Read docs/plan.md in full before doing anything else.
+
+  Then execute Phase 1 exactly as specified. ...
+
+  Why a fresh session per phase
+
+  - Each phase is a clean unit of work. Starting fresh keeps Sonnet's context
+  focused and prevents "earlier-phase baggage" from polluting later decisions.
+  - If a phase goes wrong, you can git reset --hard HEAD and restart the session
+   without tangled history.
+  - Sonnet reads the plan each time, so if you edit the plan between phases (you
+   will — real projects always need adjustments), the next session picks up the
+  latest version automatically.
+
+  If you get stuck mid-phase
+
+  Don't start Phase N+1 hoping the issue will sort itself out. Either:
+  - Finish the current phase in the same session (tell Sonnet what to fix), or
+  - git reset --hard HEAD, start a new session, retry the phase from scratch.
+
+  One more thing — tell me which path you want
+
+  Want me to copy the plan into E:\BTP project\docs\plan.md now so it lives with
+   the code? I can do that in one step and you'll be ready to start Phase 0
+  immediately. Or leave it where it is and use the full path — your call.

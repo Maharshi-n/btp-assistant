@@ -16,6 +16,7 @@ from app.web.deps import NotAuthenticated, require_user
 from app.web.routes.auth import router as auth_router
 from app.web.routes.chat import AVAILABLE_MODELS, router as chat_router
 from app.web.routes.health import router as health_router
+from app.web.routes.ws import router as ws_router
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -35,6 +36,7 @@ templates = Jinja2Templates(directory=BASE_DIR / "web" / "templates")
 app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(chat_router)
+app.include_router(ws_router)
 
 
 @app.exception_handler(NotAuthenticated)

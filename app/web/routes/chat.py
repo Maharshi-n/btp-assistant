@@ -1,19 +1,27 @@
 from __future__ import annotations
 
-from datetime import datetime
+import logging
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse
+import openai
+
+import app.config as config
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.engine import get_db
+from app.db.engine import AsyncSessionLocal, get_db
 from app.db.models import Message, Thread, User
 from app.web.deps import require_user
+from app.web.routes.ws import manager as ws_manager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
 AVAILABLE_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+
+# Module-level singleton — shares the underlying httpx connection pool across requests
+_oai_client = openai.AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 
 
 @router.post("/threads")
@@ -80,10 +88,76 @@ async def get_messages(
     ]
 
 
+async def _stream_openai(thread_id: int, model: str) -> None:
+    """Background task: fetch thread history, stream OpenAI tokens via WebSocket,
+    then persist the completed assistant message.  Uses its own DB session so it
+    is not tied to the lifetime of the HTTP request session."""
+    async with AsyncSessionLocal() as db:
+        # Build history from all messages in this thread, oldest first
+        result = await db.execute(
+            select(Message)
+            .where(Message.thread_id == thread_id)
+            .order_by(Message.created_at.asc())
+        )
+        messages = result.scalars().all()
+        history = [{"role": m.role, "content": m.content} for m in messages]
+
+        full_content: list[str] = []
+
+        try:
+            stream = await _oai_client.chat.completions.create(
+                model=model,
+                messages=history,  # type: ignore[arg-type]
+                stream=True,
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if delta:
+                    full_content.append(delta)
+                    await ws_manager.send(thread_id, {"type": "token", "content": delta})
+
+        except openai.AuthenticationError:
+            logger.warning("OpenAI AuthenticationError for thread %d", thread_id)
+            await ws_manager.send(
+                thread_id,
+                {
+                    "type": "error",
+                    "content": "Invalid or missing OpenAI API key. Set OPENAI_API_KEY in .env.",
+                },
+            )
+            return
+        except openai.APIError as exc:
+            logger.error("OpenAI APIError for thread %d: %s", thread_id, exc)
+            await ws_manager.send(
+                thread_id,
+                {"type": "error", "content": f"OpenAI API error: {exc}"},
+            )
+            return
+        except Exception as exc:
+            logger.exception("Unexpected error streaming thread %d", thread_id)
+            await ws_manager.send(thread_id, {"type": "error", "content": "Internal error. Check server logs."})
+            return
+
+        # Persist completed assistant message
+        assistant_content = "".join(full_content)
+        assistant_msg = Message(
+            thread_id=thread_id, role="assistant", content=assistant_content
+        )
+        db.add(assistant_msg)
+        await db.commit()
+        await db.refresh(assistant_msg)
+
+        await ws_manager.send(
+            thread_id,
+            {"type": "done", "message_id": assistant_msg.id},
+        )
+
+
 @router.post("/threads/{thread_id}/messages")
 async def post_message(
     thread_id: int,
     payload: dict,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require_user),
 ):
@@ -100,18 +174,19 @@ async def post_message(
     db.add(user_msg)
     await db.flush()
 
-    # Stub echo reply
-    assistant_content = f"Echo: {user_content}"
-    assistant_msg = Message(thread_id=thread_id, role="assistant", content=assistant_content)
-    db.add(assistant_msg)
-
     # Update thread title from first message if still default
     if thread.title == "New Chat":
         thread.title = user_content[:60]
 
     await db.commit()
     await db.refresh(user_msg)
-    await db.refresh(assistant_msg)
+
+    # Kick off streaming in the background; POST returns immediately
+    if ws_manager.active.get(thread_id) is None:
+        logger.warning(
+            "No WebSocket connected for thread %d — streaming will be lost", thread_id
+        )
+    background_tasks.add_task(_stream_openai, thread_id, thread.model)
 
     return {
         "user": {
@@ -119,12 +194,6 @@ async def post_message(
             "role": user_msg.role,
             "content": user_msg.content,
             "created_at": user_msg.created_at.isoformat(),
-        },
-        "assistant": {
-            "id": assistant_msg.id,
-            "role": assistant_msg.role,
-            "content": assistant_msg.content,
-            "created_at": assistant_msg.created_at.isoformat(),
         },
     }
 

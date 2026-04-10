@@ -20,3 +20,6 @@ ADMIN_PASSWORD: str = os.environ.get("ADMIN_PASSWORD", "")
 
 # Session lifetime in seconds (7 days)
 SESSION_TTL_SECONDS: int = int(os.environ.get("SESSION_TTL_SECONDS", str(7 * 24 * 3600)))
+
+# Phase 3 — OpenAI API key for streaming chat completions
+OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")

@@ -141,6 +141,9 @@
   // ─── State ───────────────────────────────────────────────────────────────
   let activeThreadId = null;
   let activeModel = "gpt-4o";
+  let activeWs = null;          // WebSocket for the current thread
+  let streamingBubble = null;   // DOM element currently receiving streamed tokens
+  let streamingText = '';       // accumulated text for the streaming bubble
 
   // ─── Sidebar (mobile) ────────────────────────────────────────────────────
   function openSidebar() {
@@ -150,6 +153,125 @@
   function closeSidebar() {
     document.getElementById('sidebar').classList.add('-translate-x-full');
     document.getElementById('sidebar-overlay').classList.add('hidden');
+  }
+
+  // ─── WebSocket management ─────────────────────────────────────────────────
+  function connectWs(threadId) {
+    if (activeWs) {
+      activeWs.onclose = null;  // prevent reconnect loop when intentionally switching
+      activeWs.close();
+    }
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    activeWs = new WebSocket(`${proto}//${location.host}/ws/threads/${threadId}`);
+
+    activeWs.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      handleWsMessage(msg);
+    };
+
+    activeWs.onclose = () => {
+      // If we were mid-stream, clean up the hanging bubble and re-enable input
+      if (streamingBubble) {
+        showStreamingError('Connection lost. Please resend your message.');
+      }
+      // Reconnect once after 1s if we still have this thread active
+      activeWs.onclose = null;  // prevent this handler from firing again on the retry
+      setTimeout(() => {
+        if (activeThreadId === threadId) connectWs(threadId);
+      }, 1000);
+    };
+
+    activeWs.onerror = (err) => {
+      console.warn('WebSocket error', err);
+    };
+  }
+
+  function handleWsMessage(msg) {
+    if (msg.type === 'token') {
+      appendToken(msg.content);
+    } else if (msg.type === 'done') {
+      finalizeStreamingBubble();
+    } else if (msg.type === 'error') {
+      showStreamingError(msg.content);
+    } else {
+      console.warn('Unknown WebSocket frame type:', msg.type);
+    }
+  }
+
+  // ─── Streaming bubble helpers ─────────────────────────────────────────────
+  function appendStreamingBubble() {
+    const pane = document.getElementById('messages-pane');
+
+    // Remove empty-state text if present
+    const empty = pane.querySelector('p.text-gray-400');
+    if (empty) empty.remove();
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flex justify-start';
+    wrapper.id = 'streaming-wrapper';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'max-w-[80%] bg-white border border-gray-200 text-gray-800 rounded-2xl rounded-bl-sm px-4 py-2 text-sm whitespace-pre-wrap break-words shadow-sm';
+    bubble.id = 'streaming-bubble';
+
+    const cursor = document.createElement('span');
+    cursor.className = 'animate-pulse';
+    cursor.id = 'streaming-cursor';
+    cursor.textContent = '▋';
+
+    bubble.appendChild(cursor);
+    wrapper.appendChild(bubble);
+    pane.appendChild(wrapper);
+    pane.scrollTop = pane.scrollHeight;
+
+    streamingBubble = bubble;
+    streamingText = '';
+    return bubble;
+  }
+
+  function appendToken(text) {
+    if (!streamingBubble) return;
+    streamingText += text;
+
+    // Render accumulated text, then re-attach cursor (textContent clears children)
+    streamingBubble.textContent = streamingText;
+    // Re-attach cursor after updating textContent (which clears children)
+    const newCursor = document.createElement('span');
+    newCursor.className = 'animate-pulse';
+    newCursor.id = 'streaming-cursor';
+    newCursor.textContent = '▋';
+    streamingBubble.appendChild(newCursor);
+
+    const pane = document.getElementById('messages-pane');
+    pane.scrollTop = pane.scrollHeight;
+  }
+
+  function finalizeStreamingBubble() {
+    if (!streamingBubble) return;
+    // Remove blinking cursor, leave only the final text
+    const cursor = document.getElementById('streaming-cursor');
+    if (cursor) cursor.remove();
+    streamingBubble = null;
+    streamingText = '';
+    setInputEnabled(true);
+  }
+
+  function showStreamingError(message) {
+    if (!streamingBubble) return;
+    streamingBubble.className = 'max-w-[80%] bg-red-50 border border-red-300 text-red-700 rounded-2xl rounded-bl-sm px-4 py-2 text-sm whitespace-pre-wrap break-words shadow-sm';
+    streamingBubble.textContent = '⚠️ ' + message;
+    streamingBubble = null;
+    streamingText = '';
+    setInputEnabled(true);
+  }
+
+  // ─── Input enable/disable helper ─────────────────────────────────────────
+  function setInputEnabled(enabled) {
+    document.getElementById('msg-input').disabled = !enabled;
+    document.getElementById('send-btn').disabled = !enabled;
+    if (enabled) {
+      document.getElementById('msg-input').focus();
+    }
   }
 
   // ─── Thread management ───────────────────────────────────────────────────
@@ -194,8 +316,7 @@
     if (!res.ok) return;
     const messages = await res.json();
 
-    // Determine model from first message metadata (thread model stored separately)
-    // We'll fetch thread info via GET /api/threads to get the model
+    // Fetch thread info to get the model
     const threadsRes = await fetch('/api/threads');
     const threads = await threadsRes.json();
     const thread = threads.find(t => t.id === threadId);
@@ -206,7 +327,14 @@
     }
 
     renderMessages(messages, thread ? thread.title : 'Chat');
-    enableInput();
+
+    // Enable input and model switcher
+    setInputEnabled(true);
+    document.getElementById('model-select').disabled = false;
+
+    // Connect WebSocket for this thread
+    connectWs(threadId);
+
     closeSidebar();
   }
 
@@ -247,11 +375,17 @@
     pane.scrollTop = pane.scrollHeight;
   }
 
-  function enableInput() {
-    document.getElementById('msg-input').disabled = false;
-    document.getElementById('send-btn').disabled = false;
-    document.getElementById('model-select').disabled = false;
-    document.getElementById('msg-input').focus();
+  async function updateSidebarTitle(threadId) {
+    const sidebarBtn = document.querySelector(`[data-thread-id="${threadId}"]`);
+    if (!sidebarBtn) return;
+    const threadsRes = await fetch('/api/threads');
+    if (!threadsRes.ok) return;
+    const threads = await threadsRes.json();
+    const thread = threads.find(t => t.id === threadId);
+    if (thread) {
+      sidebarBtn.textContent = thread.title;
+      document.getElementById('thread-title').textContent = thread.title;
+    }
   }
 
   // ─── Sending messages ────────────────────────────────────────────────────
@@ -269,8 +403,8 @@
     // Optimistically show user message
     appendMessage('user', content);
 
-    // Show thinking indicator
-    const thinkingId = showThinking();
+    // Disable input while waiting for POST to return
+    setInputEnabled(false);
 
     const res = await fetch(`/api/threads/${activeThreadId}/messages`, {
       method: 'POST',
@@ -278,50 +412,21 @@
       body: JSON.stringify({ content }),
     });
 
-    removeThinking(thinkingId);
-
     if (!res.ok) {
       appendMessage('assistant', '⚠️ Something went wrong. Please try again.');
+      setInputEnabled(true);
       return;
     }
 
+    // Response only has user message; assistant response comes via WebSocket
     const data = await res.json();
-    appendMessage('assistant', data.assistant.content);
 
-    // Update thread title in sidebar if it changed
-    const sidebarBtn = document.querySelector(`[data-thread-id="${activeThreadId}"]`);
-    if (sidebarBtn) {
-      const threadsRes = await fetch('/api/threads');
-      const threads = await threadsRes.json();
-      const thread = threads.find(t => t.id === activeThreadId);
-      if (thread) {
-        sidebarBtn.textContent = thread.title;
-        document.getElementById('thread-title').textContent = thread.title;
-      }
-    }
-  }
+    // Update thread title in sidebar if it changed (e.g. first message sets title)
+    updateSidebarTitle(activeThreadId).catch(console.warn);
 
-  function showThinking() {
-    const id = 'thinking-' + Date.now();
-    const pane = document.getElementById('messages-pane');
-    const wrapper = document.createElement('div');
-    wrapper.id = id;
-    wrapper.className = 'flex justify-start';
-    wrapper.innerHTML = `
-      <div class="bg-white border border-gray-200 text-gray-400 rounded-2xl rounded-bl-sm
-                  px-4 py-2 text-sm shadow-sm flex gap-1 items-center">
-        <span class="animate-bounce" style="animation-delay:0ms">●</span>
-        <span class="animate-bounce" style="animation-delay:150ms">●</span>
-        <span class="animate-bounce" style="animation-delay:300ms">●</span>
-      </div>`;
-    pane.appendChild(wrapper);
-    pane.scrollTop = pane.scrollHeight;
-    return id;
-  }
-
-  function removeThinking(id) {
-    const el = document.getElementById(id);
-    if (el) el.remove();
+    // Show streaming bubble — tokens will arrive via WebSocket
+    // Input stays disabled until streaming finishes (done/error frame re-enables it)
+    appendStreamingBubble();
   }
 
   // ─── Model switcher ──────────────────────────────────────────────────────
@@ -337,7 +442,7 @@
 
   // ─── Keyboard + textarea ─────────────────────────────────────────────────
   function handleKey(event) {
-    // Ctrl+Enter or just Enter (not Shift+Enter) → submit
+    // Enter (not Shift+Enter) → submit
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       sendMessage(event);

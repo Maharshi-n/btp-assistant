@@ -13,3 +13,10 @@ SECRET_KEY: str = os.environ.get("SECRET_KEY", "change-me-in-production")
 DATABASE_URL: str = os.environ.get(
     "DATABASE_URL", f"sqlite+aiosqlite:///{BASE_DIR / 'app.db'}"
 )
+
+# Phase 1 — single admin user seeded on first startup
+ADMIN_USERNAME: str = os.environ.get("ADMIN_USERNAME", "maharshi")
+ADMIN_PASSWORD: str = os.environ.get("ADMIN_PASSWORD", "")
+
+# Session lifetime in seconds (7 days)
+SESSION_TTL_SECONDS: int = int(os.environ.get("SESSION_TTL_SECONDS", str(7 * 24 * 3600)))

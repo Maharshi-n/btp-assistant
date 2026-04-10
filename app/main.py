@@ -6,12 +6,15 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.engine import init_db
-from app.db.models import User  # noqa: F401 — ensures models are registered
+from app.db.engine import get_db, init_db
+from app.db.models import Message, Thread, User  # noqa: F401 — ensures models are registered
 from app.db.seed import seed_admin
 from app.web.deps import NotAuthenticated, require_user
 from app.web.routes.auth import router as auth_router
+from app.web.routes.chat import AVAILABLE_MODELS, router as chat_router
 from app.web.routes.health import router as health_router
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -31,6 +34,7 @@ templates = Jinja2Templates(directory=BASE_DIR / "web" / "templates")
 # Routers
 app.include_router(health_router)
 app.include_router(auth_router)
+app.include_router(chat_router)
 
 
 @app.exception_handler(NotAuthenticated)
@@ -45,5 +49,18 @@ async def on_startup() -> None:
 
 
 @app.get("/")
-async def index(request: Request, _user: User = Depends(require_user)):
-    return templates.TemplateResponse("index.html", {"request": request})
+async def index(
+    request: Request,
+    _user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Thread).order_by(Thread.created_at.desc()))
+    threads = result.scalars().all()
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "threads": threads,
+            "available_models": AVAILABLE_MODELS,
+        },
+    )

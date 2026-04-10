@@ -1,12 +1,352 @@
 {% extends "base.html" %}
 
-{% block title %}BTP Assistant — Home{% endblock %}
+{% block title %}BTP Assistant{% endblock %}
 
 {% block content %}
-<div class="flex items-center justify-center min-h-screen">
-  <div class="text-center">
-    <h1 class="text-3xl font-bold mb-2">Hello from BTP assistant</h1>
-    <p class="text-gray-500">Your personal AI assistant is running.</p>
+<div class="flex h-screen overflow-hidden" id="app">
+
+  <!-- Sidebar overlay (mobile) -->
+  <div id="sidebar-overlay"
+       class="fixed inset-0 bg-black/40 z-20 hidden md:hidden"
+       onclick="closeSidebar()"></div>
+
+  <!-- Sidebar -->
+  <aside id="sidebar"
+         class="fixed md:static inset-y-0 left-0 z-30
+                w-64 bg-gray-900 text-white flex flex-col
+                transform -translate-x-full md:translate-x-0
+                transition-transform duration-200 ease-in-out">
+
+    <!-- Sidebar header -->
+    <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+      <span class="font-semibold text-sm tracking-wide">BTP Assistant</span>
+      <button onclick="closeSidebar()" class="md:hidden text-gray-400 hover:text-white">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- New Chat button -->
+    <div class="px-3 py-3">
+      <button id="new-chat-btn"
+              class="w-full flex items-center gap-2 px-3 py-2 rounded-lg
+                     bg-gray-700 hover:bg-gray-600 text-sm transition-colors"
+              onclick="newChat()">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 4v16m8-8H4"/>
+        </svg>
+        New Chat
+      </button>
+    </div>
+
+    <!-- Thread list -->
+    <nav class="flex-1 overflow-y-auto px-2 pb-4 space-y-0.5" id="thread-list">
+      {% for thread in threads %}
+      <button
+        class="thread-item w-full text-left px-3 py-2 rounded-lg text-sm
+               text-gray-300 hover:bg-gray-700 hover:text-white transition-colors truncate"
+        data-thread-id="{{ thread.id }}"
+        onclick="loadThread({{ thread.id }}, this)">
+        {{ thread.title }}
+      </button>
+      {% else %}
+      <p class="text-gray-500 text-xs px-3 py-2">No chats yet</p>
+      {% endfor %}
+    </nav>
+
+    <!-- Sidebar footer: logout -->
+    <div class="border-t border-gray-700 px-4 py-3">
+      <form action="/logout" method="post">
+        <button type="submit"
+                class="text-xs text-gray-400 hover:text-white transition-colors">
+          Sign out
+        </button>
+      </form>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <div class="flex-1 flex flex-col min-w-0 h-screen">
+
+    <!-- Top bar (mobile hamburger + thread title + model switcher) -->
+    <header class="flex items-center gap-3 px-4 py-3 border-b bg-white shadow-sm shrink-0">
+      <!-- Hamburger (mobile) -->
+      <button onclick="openSidebar()" class="md:hidden text-gray-500 hover:text-gray-800">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 6h16M4 12h16M4 18h16"/>
+        </svg>
+      </button>
+
+      <h1 id="thread-title" class="text-sm font-medium text-gray-700 flex-1 truncate">
+        Select or create a chat
+      </h1>
+
+      <!-- Model switcher -->
+      <select id="model-select"
+              class="text-xs border rounded px-2 py-1 bg-white text-gray-600
+                     focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-40"
+              disabled
+              onchange="switchModel(this.value)">
+        {% for m in available_models %}
+        <option value="{{ m }}">{{ m }}</option>
+        {% endfor %}
+      </select>
+    </header>
+
+    <!-- Message pane -->
+    <div id="messages-pane"
+         class="flex-1 overflow-y-auto px-4 py-6 space-y-4">
+      <!-- Welcome state when no thread selected -->
+      <div id="welcome-msg" class="flex flex-col items-center justify-center h-full text-center">
+        <p class="text-gray-400 text-sm">Start a new chat or select one from the sidebar.</p>
+      </div>
+    </div>
+
+    <!-- Input area -->
+    <div class="border-t bg-white px-4 py-3 shrink-0">
+      <form id="msg-form"
+            class="flex gap-2 items-end"
+            onsubmit="sendMessage(event)">
+        <textarea
+          id="msg-input"
+          rows="1"
+          placeholder="Type a message…"
+          disabled
+          class="flex-1 resize-none rounded-xl border border-gray-300 px-3 py-2
+                 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500
+                 disabled:bg-gray-100 disabled:text-gray-400
+                 max-h-40 overflow-y-auto"
+          onkeydown="handleKey(event)"
+          oninput="autoResize(this)"></textarea>
+        <button
+          id="send-btn"
+          type="submit"
+          disabled
+          class="shrink-0 rounded-xl bg-blue-600 text-white px-4 py-2 text-sm
+                 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed
+                 transition-colors">
+          Send
+        </button>
+      </form>
+    </div>
+
   </div>
 </div>
+
+<script>
+  // ─── State ───────────────────────────────────────────────────────────────
+  let activeThreadId = null;
+  let activeModel = "gpt-4o";
+
+  // ─── Sidebar (mobile) ────────────────────────────────────────────────────
+  function openSidebar() {
+    document.getElementById('sidebar').classList.remove('-translate-x-full');
+    document.getElementById('sidebar-overlay').classList.remove('hidden');
+  }
+  function closeSidebar() {
+    document.getElementById('sidebar').classList.add('-translate-x-full');
+    document.getElementById('sidebar-overlay').classList.add('hidden');
+  }
+
+  // ─── Thread management ───────────────────────────────────────────────────
+  async function newChat() {
+    const res = await fetch('/api/threads', { method: 'POST' });
+    if (!res.ok) return;
+    const thread = await res.json();
+    prependThreadToSidebar(thread);
+    await loadThread(thread.id);
+  }
+
+  function prependThreadToSidebar(thread) {
+    const list = document.getElementById('thread-list');
+    // Remove empty-state placeholder if present
+    const empty = list.querySelector('p');
+    if (empty) empty.remove();
+
+    const btn = document.createElement('button');
+    btn.className = 'thread-item w-full text-left px-3 py-2 rounded-lg text-sm text-gray-300 hover:bg-gray-700 hover:text-white transition-colors truncate';
+    btn.dataset.threadId = thread.id;
+    btn.textContent = thread.title;
+    btn.onclick = () => loadThread(thread.id, btn);
+    list.prepend(btn);
+  }
+
+  async function loadThread(threadId, btnEl) {
+    activeThreadId = threadId;
+
+    // Highlight active thread in sidebar
+    document.querySelectorAll('.thread-item').forEach(b => {
+      b.classList.remove('bg-gray-700', 'text-white');
+      b.classList.add('text-gray-300');
+    });
+    const activeBtn = btnEl || document.querySelector(`[data-thread-id="${threadId}"]`);
+    if (activeBtn) {
+      activeBtn.classList.add('bg-gray-700', 'text-white');
+      activeBtn.classList.remove('text-gray-300');
+    }
+
+    // Fetch messages
+    const res = await fetch(`/api/threads/${threadId}/messages`);
+    if (!res.ok) return;
+    const messages = await res.json();
+
+    // Determine model from first message metadata (thread model stored separately)
+    // We'll fetch thread info via GET /api/threads to get the model
+    const threadsRes = await fetch('/api/threads');
+    const threads = await threadsRes.json();
+    const thread = threads.find(t => t.id === threadId);
+    if (thread) {
+      activeModel = thread.model;
+      const sel = document.getElementById('model-select');
+      sel.value = activeModel;
+    }
+
+    renderMessages(messages, thread ? thread.title : 'Chat');
+    enableInput();
+    closeSidebar();
+  }
+
+  function renderMessages(messages, title) {
+    document.getElementById('thread-title').textContent = title || 'Chat';
+
+    const pane = document.getElementById('messages-pane');
+    pane.innerHTML = '';
+
+    if (messages.length === 0) {
+      pane.innerHTML = '<p class="text-gray-400 text-sm text-center mt-8">Send a message to start the conversation.</p>';
+      return;
+    }
+
+    messages.forEach(m => appendMessage(m.role, m.content));
+  }
+
+  function appendMessage(role, content) {
+    const pane = document.getElementById('messages-pane');
+
+    // Remove empty-state text if present
+    const empty = pane.querySelector('p.text-gray-400');
+    if (empty) empty.remove();
+
+    const wrapper = document.createElement('div');
+    wrapper.className = role === 'user'
+      ? 'flex justify-end'
+      : 'flex justify-start';
+
+    const bubble = document.createElement('div');
+    bubble.className = role === 'user'
+      ? 'max-w-[80%] bg-blue-600 text-white rounded-2xl rounded-br-sm px-4 py-2 text-sm whitespace-pre-wrap break-words'
+      : 'max-w-[80%] bg-white border border-gray-200 text-gray-800 rounded-2xl rounded-bl-sm px-4 py-2 text-sm whitespace-pre-wrap break-words shadow-sm';
+
+    bubble.textContent = content;
+    wrapper.appendChild(bubble);
+    pane.appendChild(wrapper);
+    pane.scrollTop = pane.scrollHeight;
+  }
+
+  function enableInput() {
+    document.getElementById('msg-input').disabled = false;
+    document.getElementById('send-btn').disabled = false;
+    document.getElementById('model-select').disabled = false;
+    document.getElementById('msg-input').focus();
+  }
+
+  // ─── Sending messages ────────────────────────────────────────────────────
+  async function sendMessage(event) {
+    event.preventDefault();
+    if (!activeThreadId) return;
+
+    const input = document.getElementById('msg-input');
+    const content = input.value.trim();
+    if (!content) return;
+
+    input.value = '';
+    input.style.height = 'auto';
+
+    // Optimistically show user message
+    appendMessage('user', content);
+
+    // Show thinking indicator
+    const thinkingId = showThinking();
+
+    const res = await fetch(`/api/threads/${activeThreadId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+
+    removeThinking(thinkingId);
+
+    if (!res.ok) {
+      appendMessage('assistant', '⚠️ Something went wrong. Please try again.');
+      return;
+    }
+
+    const data = await res.json();
+    appendMessage('assistant', data.assistant.content);
+
+    // Update thread title in sidebar if it changed
+    const sidebarBtn = document.querySelector(`[data-thread-id="${activeThreadId}"]`);
+    if (sidebarBtn) {
+      const threadsRes = await fetch('/api/threads');
+      const threads = await threadsRes.json();
+      const thread = threads.find(t => t.id === activeThreadId);
+      if (thread) {
+        sidebarBtn.textContent = thread.title;
+        document.getElementById('thread-title').textContent = thread.title;
+      }
+    }
+  }
+
+  function showThinking() {
+    const id = 'thinking-' + Date.now();
+    const pane = document.getElementById('messages-pane');
+    const wrapper = document.createElement('div');
+    wrapper.id = id;
+    wrapper.className = 'flex justify-start';
+    wrapper.innerHTML = `
+      <div class="bg-white border border-gray-200 text-gray-400 rounded-2xl rounded-bl-sm
+                  px-4 py-2 text-sm shadow-sm flex gap-1 items-center">
+        <span class="animate-bounce" style="animation-delay:0ms">●</span>
+        <span class="animate-bounce" style="animation-delay:150ms">●</span>
+        <span class="animate-bounce" style="animation-delay:300ms">●</span>
+      </div>`;
+    pane.appendChild(wrapper);
+    pane.scrollTop = pane.scrollHeight;
+    return id;
+  }
+
+  function removeThinking(id) {
+    const el = document.getElementById(id);
+    if (el) el.remove();
+  }
+
+  // ─── Model switcher ──────────────────────────────────────────────────────
+  async function switchModel(model) {
+    if (!activeThreadId) return;
+    activeModel = model;
+    await fetch(`/api/threads/${activeThreadId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    });
+  }
+
+  // ─── Keyboard + textarea ─────────────────────────────────────────────────
+  function handleKey(event) {
+    // Ctrl+Enter or just Enter (not Shift+Enter) → submit
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      sendMessage(event);
+    }
+  }
+
+  function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  }
+</script>
 {% endblock %}

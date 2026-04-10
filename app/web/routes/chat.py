@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 
 import openai
+from langchain_core.messages import AIMessage, HumanMessage
 
-import app.config as config
+from app.agents.supervisor import get_graph
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,9 +20,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 AVAILABLE_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
-
-# Module-level singleton — shares the underlying httpx connection pool across requests
-_oai_client = openai.AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 
 
 @router.post("/threads")
@@ -88,10 +86,16 @@ async def get_messages(
     ]
 
 
-async def _stream_openai(thread_id: int, model: str) -> None:
-    """Background task: fetch thread history, stream OpenAI tokens via WebSocket,
-    then persist the completed assistant message.  Uses its own DB session so it
-    is not tied to the lifetime of the HTTP request session."""
+async def _stream_langgraph(thread_id: int, model: str) -> None:
+    """Background task: stream the LangGraph supervisor and forward events to WebSocket.
+
+    Event types forwarded to the client:
+    - {type: "node_start", node: "supervisor"}   — chat node entered
+    - {type: "node_end",   node: "supervisor"}   — chat node exited
+    - {type: "token",      content: "..."}        — streamed token from the LLM
+    - {type: "done",       message_id: <int>}     — assistant message persisted
+    - {type: "error",      content: "..."}        — something went wrong
+    """
     async with AsyncSessionLocal() as db:
         # Build history from all messages in this thread, oldest first
         result = await db.execute(
@@ -100,21 +104,52 @@ async def _stream_openai(thread_id: int, model: str) -> None:
             .order_by(Message.created_at.asc())
         )
         messages = result.scalars().all()
-        history = [{"role": m.role, "content": m.content} for m in messages]
+
+        # Convert to LangChain message objects
+        lc_messages = [
+            HumanMessage(content=m.content) if m.role == "user"
+            else AIMessage(content=m.content)
+            for m in messages
+        ]
+
+        graph = get_graph()
+        lg_config = {
+            "configurable": {
+                "thread_id": str(thread_id),
+                "model": model,
+            }
+        }
 
         full_content: list[str] = []
 
         try:
-            stream = await _oai_client.chat.completions.create(
-                model=model,
-                messages=history,  # type: ignore[arg-type]
-                stream=True,
-            )
-            async for chunk in stream:
-                delta = chunk.choices[0].delta.content if chunk.choices else None
-                if delta:
-                    full_content.append(delta)
-                    await ws_manager.send(thread_id, {"type": "token", "content": delta})
+            async for event in graph.astream_events(
+                {"messages": lc_messages},
+                lg_config,
+                version="v2",
+            ):
+                event_type: str = event.get("event", "")
+                name: str = event.get("name", "")
+
+                if event_type == "on_chain_start" and name == "chat":
+                    await ws_manager.send(
+                        thread_id, {"type": "node_start", "node": "supervisor"}
+                    )
+
+                elif event_type == "on_chain_end" and name == "chat":
+                    await ws_manager.send(
+                        thread_id, {"type": "node_end", "node": "supervisor"}
+                    )
+
+                elif event_type == "on_chat_model_stream":
+                    chunk = event.get("data", {}).get("chunk")
+                    if chunk is not None:
+                        token: str = chunk.content
+                        if token:
+                            full_content.append(token)
+                            await ws_manager.send(
+                                thread_id, {"type": "token", "content": token}
+                            )
 
         except openai.AuthenticationError:
             logger.warning("OpenAI AuthenticationError for thread %d", thread_id)
@@ -129,13 +164,14 @@ async def _stream_openai(thread_id: int, model: str) -> None:
         except openai.APIError as exc:
             logger.error("OpenAI APIError for thread %d: %s", thread_id, exc)
             await ws_manager.send(
-                thread_id,
-                {"type": "error", "content": f"OpenAI API error: {exc}"},
+                thread_id, {"type": "error", "content": f"OpenAI API error: {exc}"}
             )
             return
         except Exception as exc:
             logger.exception("Unexpected error streaming thread %d", thread_id)
-            await ws_manager.send(thread_id, {"type": "error", "content": "Internal error. Check server logs."})
+            await ws_manager.send(
+                thread_id, {"type": "error", "content": "Internal error. Check server logs."}
+            )
             return
 
         # Persist completed assistant message
@@ -186,7 +222,7 @@ async def post_message(
         logger.warning(
             "No WebSocket connected for thread %d — streaming will be lost", thread_id
         )
-    background_tasks.add_task(_stream_openai, thread_id, thread.model)
+    background_tasks.add_task(_stream_langgraph, thread_id, thread.model)
 
     return {
         "user": {

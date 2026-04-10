@@ -97,6 +97,18 @@
       </select>
     </header>
 
+    <!-- Agents panel (collapsed by default; expands while agent is active) -->
+    <div id="agents-panel"
+         class="hidden border-b bg-gray-50 px-4 py-2 shrink-0">
+      <div class="flex items-center gap-2 text-xs text-gray-500">
+        <span class="font-semibold text-gray-700">Agents</span>
+        <span id="agent-supervisor-status"
+              class="flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border text-gray-500">
+          <!-- status text injected by JS -->
+        </span>
+      </div>
+    </div>
+
     <!-- Message pane -->
     <div id="messages-pane"
          class="flex-1 overflow-y-auto px-4 py-6 space-y-4">
@@ -191,11 +203,39 @@
       appendToken(msg.content);
     } else if (msg.type === 'done') {
       finalizeStreamingBubble();
+      hideAgentsPanel();
     } else if (msg.type === 'error') {
       showStreamingError(msg.content);
+      hideAgentsPanel();
+    } else if (msg.type === 'node_start') {
+      showAgentStatus(msg.node, 'thinking');
+    } else if (msg.type === 'node_end') {
+      showAgentStatus(msg.node, 'done');
     } else {
       console.warn('Unknown WebSocket frame type:', msg.type);
     }
+  }
+
+  // ─── Agents panel ─────────────────────────────────────────────────────────
+  function showAgentStatus(node, status) {
+    const panel = document.getElementById('agents-panel');
+    const statusEl = document.getElementById('agent-supervisor-status');
+    panel.classList.remove('hidden');
+
+    if (status === 'thinking') {
+      statusEl.className = 'flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700';
+      statusEl.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse inline-block"></span> supervisor — thinking…';
+    } else {
+      statusEl.className = 'flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-50 border border-green-200 text-green-700';
+      statusEl.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span> supervisor — done';
+    }
+  }
+
+  function hideAgentsPanel() {
+    // Keep the panel visible briefly so the user can see "done", then hide
+    setTimeout(() => {
+      document.getElementById('agents-panel').classList.add('hidden');
+    }, 1500);
   }
 
   // ─── Streaming bubble helpers ─────────────────────────────────────────────

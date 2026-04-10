@@ -9,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.supervisor import init_supervisor, shutdown_supervisor
 from app.db.engine import get_db, init_db
 from app.db.models import Message, Thread, User  # noqa: F401 — ensures models are registered
 from app.db.seed import seed_admin
@@ -48,6 +49,12 @@ async def not_authenticated_handler(request: Request, exc: NotAuthenticated):
 async def on_startup() -> None:
     await init_db()
     await seed_admin()
+    await init_supervisor()
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    await shutdown_supervisor()
 
 
 @app.get("/")

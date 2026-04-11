@@ -44,8 +44,24 @@ manager = ConnectionManager()
 @router.websocket("/ws/threads/{thread_id}")
 async def websocket_endpoint(websocket: WebSocket, thread_id: int) -> None:
     await manager.connect(thread_id, websocket)
+
+    # Re-send any pending permission requests for this thread so the UI
+    # can show the approval card even after a page refresh or reconnect.
     try:
-        # Keep the connection alive; the server pushes data, client rarely sends.
+        from app.web.routes.chat import get_pending_permissions
+        for req_id, req in get_pending_permissions().items():
+            if req["thread_id"] == thread_id:
+                await websocket.send_json({
+                    "type": "permission_request",
+                    "id": req_id,
+                    "tool": req["tool"],
+                    "args": req["args"],
+                    "prompt": req["prompt"],
+                })
+    except Exception:
+        pass  # never crash the WS connection over this
+
+    try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:

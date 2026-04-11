@@ -100,11 +100,14 @@
     <!-- Agents panel (collapsed by default; expands while agent is active) -->
     <div id="agents-panel"
          class="hidden border-b bg-gray-50 px-4 py-2 shrink-0">
-      <div class="flex items-center gap-2 text-xs text-gray-500">
+      <div class="flex flex-wrap items-center gap-2 text-xs text-gray-500">
         <span class="font-semibold text-gray-700">Agents</span>
         <span id="agent-supervisor-status"
               class="flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border text-gray-500">
           <!-- status text injected by JS -->
+        </span>
+        <span id="agent-tool-status" class="hidden flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700">
+          <!-- tool call status injected by JS -->
         </span>
       </div>
     </div>
@@ -211,6 +214,14 @@
       showAgentStatus(msg.node, 'thinking');
     } else if (msg.type === 'node_end') {
       showAgentStatus(msg.node, 'done');
+    } else if (msg.type === 'tool_call') {
+      showToolStatus(msg.tool, 'calling');
+    } else if (msg.type === 'tool_result') {
+      showToolStatus(msg.tool, 'done');
+    } else if (msg.type === 'permission_request') {
+      showPermissionCard(msg.id, msg.tool, msg.prompt, msg.args);
+    } else if (msg.type === 'permission_resolved') {
+      removePermissionCard(msg.id);
     } else {
       console.warn('Unknown WebSocket frame type:', msg.type);
     }
@@ -231,10 +242,21 @@
     }
   }
 
+  function showToolStatus(toolName, status) {
+    const toolEl = document.getElementById('agent-tool-status');
+    toolEl.classList.remove('hidden');
+    if (status === 'calling') {
+      toolEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse inline-block"></span> supervisor → ${toolName}…`;
+    } else {
+      toolEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block"></span> supervisor → ${toolName} → done`;
+    }
+  }
+
   function hideAgentsPanel() {
     // Keep the panel visible briefly so the user can see "done", then hide
     setTimeout(() => {
       document.getElementById('agents-panel').classList.add('hidden');
+      document.getElementById('agent-tool-status').classList.add('hidden');
     }, 1500);
   }
 
@@ -492,6 +514,102 @@
   function autoResize(el) {
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  }
+
+  // ─── Permission cards ─────────────────────────────────────────────────────
+  function showPermissionCard(requestId, tool, prompt, args) {
+    const pane = document.getElementById('messages-pane');
+
+    // Remove the blinking streaming bubble if one is active (graph paused)
+    if (streamingBubble) {
+      const cursor = document.getElementById('streaming-cursor');
+      if (cursor) cursor.remove();
+      streamingBubble = null;
+      streamingText = '';
+    }
+
+    const card = document.createElement('div');
+    card.id = `perm-card-${requestId}`;
+    card.className = 'flex justify-start';
+
+    // Truncate long args for display
+    let argsStr = '';
+    try {
+      argsStr = JSON.stringify(args, null, 2);
+      if (argsStr.length > 300) argsStr = argsStr.slice(0, 300) + '…';
+    } catch (_) {}
+
+    card.innerHTML = `
+      <div class="max-w-[85%] border border-amber-300 bg-amber-50 rounded-2xl rounded-bl-sm px-4 py-3 text-sm shadow-sm space-y-2">
+        <div class="flex items-center gap-2 font-semibold text-amber-800">
+          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+          </svg>
+          Permission required
+        </div>
+        <p class="text-amber-900">${escapeHtml(prompt)}</p>
+        ${argsStr ? `<pre class="text-xs bg-amber-100 rounded p-2 overflow-x-auto text-amber-800">${escapeHtml(argsStr)}</pre>` : ''}
+        <div class="flex gap-2 pt-1">
+          <button
+            onclick="resolvePermission('${requestId}', 'approved')"
+            class="px-4 py-1.5 rounded-lg bg-green-600 text-white text-xs font-medium hover:bg-green-700 transition-colors">
+            Approve
+          </button>
+          <button
+            onclick="resolvePermission('${requestId}', 'denied')"
+            class="px-4 py-1.5 rounded-lg bg-red-500 text-white text-xs font-medium hover:bg-red-600 transition-colors">
+            Deny
+          </button>
+        </div>
+      </div>`;
+
+    pane.appendChild(card);
+    pane.scrollTop = pane.scrollHeight;
+  }
+
+  function removePermissionCard(requestId) {
+    const card = document.getElementById(`perm-card-${requestId}`);
+    if (card) card.remove();
+  }
+
+  async function resolvePermission(requestId, decision) {
+    // Disable buttons immediately to prevent double-submit
+    const card = document.getElementById(`perm-card-${requestId}`);
+    if (card) {
+      card.querySelectorAll('button').forEach(b => b.disabled = true);
+      // Show which choice was made
+      const label = decision === 'approved' ? '✓ Approved' : '✗ Denied';
+      const color = decision === 'approved' ? 'text-green-700' : 'text-red-700';
+      const statusEl = document.createElement('p');
+      statusEl.className = `text-xs font-medium ${color}`;
+      statusEl.textContent = label;
+      card.querySelector('.flex.gap-2.pt-1').replaceWith(statusEl);
+    }
+
+    try {
+      const res = await fetch(`/api/permissions/${requestId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision }),
+      });
+      if (!res.ok) {
+        console.error('Permission decision failed:', await res.text());
+      } else {
+        // The graph will resume and eventually send 'done' or more tokens
+        appendStreamingBubble();
+      }
+    } catch (err) {
+      console.error('Error sending permission decision:', err);
+    }
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 </script>
 {% endblock %}

@@ -4,6 +4,7 @@ import logging
 
 import openai
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.types import Command
 
 from app.agents.supervisor import get_graph
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -20,6 +21,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 AVAILABLE_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+
+# ---------------------------------------------------------------------------
+# In-memory store of pending permission requests
+# Maps request_id -> {thread_id, tool, args, prompt, lg_config}
+# ---------------------------------------------------------------------------
+_pending_permissions: dict[str, dict] = {}
+
+
+def get_pending_permissions() -> dict[str, dict]:
+    return _pending_permissions
 
 
 @router.post("/threads")
@@ -86,18 +97,25 @@ async def get_messages(
     ]
 
 
-async def _stream_langgraph(thread_id: int, model: str) -> None:
+async def _stream_langgraph(
+    thread_id: int,
+    model: str,
+    resume_command: Command | None = None,
+) -> None:
     """Background task: stream the LangGraph supervisor and forward events to WebSocket.
 
     Event types forwarded to the client:
-    - {type: "node_start", node: "supervisor"}   — chat node entered
-    - {type: "node_end",   node: "supervisor"}   — chat node exited
-    - {type: "token",      content: "..."}        — streamed token from the LLM
-    - {type: "done",       message_id: <int>}     — assistant message persisted
-    - {type: "error",      content: "..."}        — something went wrong
+    - {type: "node_start",          node: "supervisor"|"tools"}
+    - {type: "node_end",            node: "supervisor"|"tools"}
+    - {type: "token",               content: "..."}
+    - {type: "tool_call",           tool: "...", args: {...}}
+    - {type: "tool_result",         tool: "...", content: "..."}
+    - {type: "permission_request",  id, tool, args, prompt}
+    - {type: "permission_resolved", id, decision}
+    - {type: "done",                message_id: <int>}
+    - {type: "error",               content: "..."}
     """
     async with AsyncSessionLocal() as db:
-        # Build history from all messages in this thread, oldest first
         result = await db.execute(
             select(Message)
             .where(Message.thread_id == thread_id)
@@ -105,7 +123,6 @@ async def _stream_langgraph(thread_id: int, model: str) -> None:
         )
         messages = result.scalars().all()
 
-        # Convert to LangChain message objects
         lc_messages = [
             HumanMessage(content=m.content) if m.role == "user"
             else AIMessage(content=m.content)
@@ -120,29 +137,68 @@ async def _stream_langgraph(thread_id: int, model: str) -> None:
             }
         }
 
+        # Either a fresh invoke with the message history, or a resume after interrupt
+        if resume_command is not None:
+            graph_input = resume_command
+        else:
+            graph_input = {"messages": lc_messages}
+
         full_content: list[str] = []
 
         try:
             async for event in graph.astream_events(
-                {"messages": lc_messages},
+                graph_input,
                 lg_config,
                 version="v2",
             ):
                 event_type: str = event.get("event", "")
                 name: str = event.get("name", "")
+                data: dict = event.get("data", {})
 
-                if event_type == "on_chain_start" and name == "chat":
+                # ── Interrupt (permission request) ─────────────────────────
+                if event_type == "on_chain_stream":
+                    chunk = data.get("chunk", {})
+                    if isinstance(chunk, dict) and "__interrupt__" in chunk:
+                        for interrupt_obj in chunk["__interrupt__"]:
+                            payload = (
+                                interrupt_obj.value
+                                if hasattr(interrupt_obj, "value")
+                                else interrupt_obj.get("value", {})
+                            )
+                            if payload.get("type") == "permission_request":
+                                request_id = payload["request_id"]
+                                # Store so the permissions endpoint can resume
+                                _pending_permissions[request_id] = {
+                                    "thread_id": thread_id,
+                                    "tool": payload["tool"],
+                                    "args": payload["args"],
+                                    "prompt": payload["prompt"],
+                                    "lg_config": lg_config,
+                                    "model": model,
+                                }
+                                await ws_manager.send(thread_id, {
+                                    "type": "permission_request",
+                                    "id": request_id,
+                                    "tool": payload["tool"],
+                                    "args": payload["args"],
+                                    "prompt": payload["prompt"],
+                                })
+                        continue  # don't fall through to other handlers
+
+                # ── Node lifecycle ─────────────────────────────────────────
+                if event_type == "on_chain_start" and name in ("supervisor", "tools"):
                     await ws_manager.send(
-                        thread_id, {"type": "node_start", "node": "supervisor"}
+                        thread_id, {"type": "node_start", "node": name}
                     )
 
-                elif event_type == "on_chain_end" and name == "chat":
+                elif event_type == "on_chain_end" and name in ("supervisor", "tools"):
                     await ws_manager.send(
-                        thread_id, {"type": "node_end", "node": "supervisor"}
+                        thread_id, {"type": "node_end", "node": name}
                     )
 
+                # ── Streamed LLM tokens ────────────────────────────────────
                 elif event_type == "on_chat_model_stream":
-                    chunk = event.get("data", {}).get("chunk")
+                    chunk = data.get("chunk")
                     if chunk is not None:
                         token: str = chunk.content
                         if token:
@@ -150,6 +206,30 @@ async def _stream_langgraph(thread_id: int, model: str) -> None:
                             await ws_manager.send(
                                 thread_id, {"type": "token", "content": token}
                             )
+
+                # ── Tool calls ─────────────────────────────────────────────
+                elif event_type == "on_tool_start":
+                    tool_name: str = name
+                    tool_args = data.get("input", {})
+                    await ws_manager.send(
+                        thread_id,
+                        {"type": "tool_call", "tool": tool_name, "args": tool_args},
+                    )
+
+                # ── Tool results ───────────────────────────────────────────
+                elif event_type == "on_tool_end":
+                    tool_name = name
+                    tool_output = data.get("output", "")
+                    if hasattr(tool_output, "content"):
+                        tool_output = tool_output.content
+                    await ws_manager.send(
+                        thread_id,
+                        {
+                            "type": "tool_result",
+                            "tool": tool_name,
+                            "content": str(tool_output)[:500],
+                        },
+                    )
 
         except openai.AuthenticationError:
             logger.warning("OpenAI AuthenticationError for thread %d", thread_id)
@@ -174,19 +254,24 @@ async def _stream_langgraph(thread_id: int, model: str) -> None:
             )
             return
 
-        # Persist completed assistant message
-        assistant_content = "".join(full_content)
-        assistant_msg = Message(
-            thread_id=thread_id, role="assistant", content=assistant_content
-        )
-        db.add(assistant_msg)
-        await db.commit()
-        await db.refresh(assistant_msg)
+        # Persist completed assistant message (only if we got tokens)
+        if full_content:
+            assistant_content = "".join(full_content)
+            assistant_msg = Message(
+                thread_id=thread_id, role="assistant", content=assistant_content
+            )
+            db.add(assistant_msg)
+            await db.commit()
+            await db.refresh(assistant_msg)
 
-        await ws_manager.send(
-            thread_id,
-            {"type": "done", "message_id": assistant_msg.id},
-        )
+            await ws_manager.send(
+                thread_id,
+                {"type": "done", "message_id": assistant_msg.id},
+            )
+        else:
+            # Graph paused at interrupt — don't send "done", the UI waits for the
+            # permission card to be resolved first.
+            pass
 
 
 @router.post("/threads/{thread_id}/messages")
@@ -205,19 +290,16 @@ async def post_message(
     if not user_content:
         raise HTTPException(status_code=422, detail="content is required")
 
-    # Persist user message
     user_msg = Message(thread_id=thread_id, role="user", content=user_content)
     db.add(user_msg)
     await db.flush()
 
-    # Update thread title from first message if still default
     if thread.title == "New Chat":
         thread.title = user_content[:60]
 
     await db.commit()
     await db.refresh(user_msg)
 
-    # Kick off streaming in the background; POST returns immediately
     if ws_manager.active.get(thread_id) is None:
         logger.warning(
             "No WebSocket connected for thread %d — streaming will be lost", thread_id

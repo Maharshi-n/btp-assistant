@@ -73,6 +73,74 @@ def policy_web_fetch(args: dict) -> Decision:
 
 
 # ---------------------------------------------------------------------------
+# Phase 8 — Google tool policies
+# ---------------------------------------------------------------------------
+
+def policy_gmail_list_unread(args: dict) -> Decision:
+    """Reading email is auto (read-only)."""
+    return "auto"
+
+
+def policy_gmail_read(args: dict) -> Decision:
+    """Reading a single email is auto (read-only)."""
+    return "auto"
+
+
+def policy_gmail_search(args: dict) -> Decision:
+    """Searching email is auto (read-only)."""
+    return "auto"
+
+
+def policy_gmail_send(args: dict) -> Decision:
+    """Sending email is always ask (network write)."""
+    return "ask"
+
+
+def policy_drive_list(args: dict) -> Decision:
+    """Listing Drive files is auto (read-only)."""
+    return "auto"
+
+
+def policy_drive_read(args: dict) -> Decision:
+    """Reading a Drive file is auto (read-only)."""
+    return "auto"
+
+
+def policy_drive_write(args: dict) -> Decision:
+    """Writing to Drive is always ask (network write)."""
+    return "ask"
+
+
+def policy_drive_download(args: dict) -> Decision:
+    """Downloading from Drive to workspace is auto (read from Drive, write to local workspace)."""
+    return "auto"
+
+
+def policy_drive_upload(args: dict) -> Decision:
+    """Uploading from workspace to Drive is always ask (network write)."""
+    return "ask"
+
+
+def policy_calendar_list_events(args: dict) -> Decision:
+    """Listing calendar events is auto (read-only)."""
+    return "auto"
+
+
+def policy_calendar_create_event(args: dict) -> Decision:
+    """Creating a calendar event is always ask (network write)."""
+    return "ask"
+
+
+# ---------------------------------------------------------------------------
+# Telegram
+# ---------------------------------------------------------------------------
+
+def policy_telegram_send(args: dict) -> Decision:
+    """Sending a Telegram notification to yourself is auto."""
+    return "auto"
+
+
+# ---------------------------------------------------------------------------
 # Dispatch table — maps tool name → policy function
 # ---------------------------------------------------------------------------
 
@@ -84,6 +152,19 @@ _POLICY_TABLE: dict[str, object] = {
     "run_shell_command": policy_run_shell_command,
     "web_search": policy_web_search,
     "web_fetch": policy_web_fetch,
+    # Phase 8 — Google tools
+    "gmail_list_unread": policy_gmail_list_unread,
+    "gmail_read": policy_gmail_read,
+    "gmail_search": policy_gmail_search,
+    "gmail_send": policy_gmail_send,
+    "drive_list": policy_drive_list,
+    "drive_read": policy_drive_read,
+    "drive_write": policy_drive_write,
+    "drive_download": policy_drive_download,
+    "drive_upload": policy_drive_upload,
+    "calendar_list_events": policy_calendar_list_events,
+    "calendar_create_event": policy_calendar_create_event,
+    "telegram_send": policy_telegram_send,
 }
 
 
@@ -106,6 +187,21 @@ def human_readable_prompt(tool_name: str, args: dict) -> str:
     if tool_name == "write_file":
         path = args.get("path", "?")
         return f"Overwrite existing file: {path}"
+    if tool_name == "gmail_send":
+        to = args.get("to", "?")
+        subject = args.get("subject", "?")
+        return f"Send email to {to} — Subject: {subject}"
+    if tool_name == "drive_write":
+        name = args.get("name", "?")
+        return f"Write file to Google Drive: {name}"
+    if tool_name == "drive_upload":
+        file_path = args.get("file_path", "?")
+        name = args.get("name", "") or file_path
+        return f"Upload '{name}' to Google Drive"
+    if tool_name == "calendar_create_event":
+        summary = args.get("summary", "?")
+        start = args.get("start", "?")
+        return f"Create calendar event: {summary} at {start}"
     # Generic fallback
     arg_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:3])
     return f"Run {tool_name}({arg_str})"

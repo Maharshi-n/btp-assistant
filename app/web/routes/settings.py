@@ -78,6 +78,8 @@ async def settings_page(
             "fernet_configured": fernet_configured,
             "workspace_dir": str(app_config.WORKSPACE_DIR),
             "available_models": list(AVAILABLE_MODELS),
+            "telegram_bot_token": app_config.TELEGRAM_BOT_TOKEN,
+            "telegram_chat_id": app_config.TELEGRAM_CHAT_ID,
         },
     )
 

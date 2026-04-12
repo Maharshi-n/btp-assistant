@@ -80,6 +80,8 @@ async def settings_page(
             "available_models": list(AVAILABLE_MODELS),
             "telegram_bot_token": app_config.TELEGRAM_BOT_TOKEN,
             "telegram_chat_id": app_config.TELEGRAM_CHAT_ID,
+            "telegram_webhook_url": app_config.TELEGRAM_WEBHOOK_URL,
+            "telegram_webhook_active": bool(app_config.TELEGRAM_WEBHOOK_URL and app_config.TELEGRAM_WEBHOOK_SECRET),
         },
     )
 
@@ -205,6 +207,79 @@ async def test_telegram(
         return {"ok": True, "message": "Test message sent successfully."}
     else:
         return {"ok": False, "message": result}
+
+
+@router.post("/telegram/webhook")
+async def register_telegram_webhook(
+    request: Request,
+    _user: User = Depends(require_user),
+):
+    """Register the Telegram webhook with the given ngrok base URL."""
+    import secrets
+    import httpx
+    import app.config as app_config
+
+    form = await request.form()
+    webhook_url = form.get("webhook_url", "").strip().rstrip("/")
+
+    if not webhook_url:
+        return RedirectResponse(url="/settings?webhook_error=empty", status_code=302)
+
+    token = app_config.TELEGRAM_BOT_TOKEN
+    if not token:
+        return RedirectResponse(url="/settings?webhook_error=no_token", status_code=302)
+
+    # Generate secret if not already set
+    secret = app_config.TELEGRAM_WEBHOOK_SECRET or secrets.token_hex(32)
+
+    full_url = webhook_url + "/telegram/webhook"
+
+    # Call Telegram setWebhook
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"https://api.telegram.org/bot{token}/setWebhook",
+                json={"url": full_url, "secret_token": secret},
+            )
+            data = resp.json()
+            if not data.get("ok"):
+                error_msg = data.get("description", "Unknown error")
+                return RedirectResponse(
+                    url=f"/settings?webhook_error={error_msg[:80]}", status_code=302
+                )
+    except Exception as exc:
+        return RedirectResponse(url=f"/settings?webhook_error={str(exc)[:80]}", status_code=302)
+
+    # Update live config
+    app_config.TELEGRAM_WEBHOOK_URL = webhook_url
+    app_config.TELEGRAM_WEBHOOK_SECRET = secret
+
+    # Persist to .env
+    env_path = BASE_DIR.parent / ".env"
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+        updates = {
+            "TELEGRAM_WEBHOOK_URL": webhook_url,
+            "TELEGRAM_WEBHOOK_SECRET": secret,
+        }
+        new_lines = []
+        found = set()
+        for line in lines:
+            matched = False
+            for key in updates:
+                if line.startswith(f"{key}="):
+                    new_lines.append(f"{key}={updates[key]}")
+                    found.add(key)
+                    matched = True
+                    break
+            if not matched:
+                new_lines.append(line)
+        for key, val in updates.items():
+            if key not in found:
+                new_lines.append(f"{key}={val}")
+        env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+    return RedirectResponse(url="/settings?webhook_ok=1", status_code=302)
 
 
 @router.post("/change-password")

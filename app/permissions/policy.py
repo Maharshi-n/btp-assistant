@@ -140,6 +140,11 @@ def policy_telegram_send(args: dict) -> Decision:
     return "auto"
 
 
+def policy_telegram_ask(args: dict) -> Decision:
+    """Asking a question via Telegram is auto — it's a notification to self."""
+    return "auto"
+
+
 # ---------------------------------------------------------------------------
 # Dispatch table — maps tool name → policy function
 # ---------------------------------------------------------------------------
@@ -165,6 +170,7 @@ _POLICY_TABLE: dict[str, object] = {
     "calendar_list_events": policy_calendar_list_events,
     "calendar_create_event": policy_calendar_create_event,
     "telegram_send": policy_telegram_send,
+    "telegram_ask": policy_telegram_ask,
 }
 
 

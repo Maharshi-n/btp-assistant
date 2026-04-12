@@ -60,7 +60,7 @@ from app.tools.filesystem import delete_file, list_dir, read_file, write_file
 from app.tools.google_tools import GOOGLE_TOOLS
 from app.tools.shell import run_shell_command
 from app.tools.web import web_fetch, web_search
-from app.tools.telegram_tools import telegram_send
+from app.tools.telegram_tools import telegram_ask, telegram_send
 
 # ---------------------------------------------------------------------------
 # Bounds (hardcoded per plan)
@@ -132,6 +132,7 @@ WORKER_TOOLS = [
     web_fetch,
     *GOOGLE_TOOLS,
     telegram_send,
+    telegram_ask,
 ]
 
 _TOOL_MAP: dict[str, Any] = {t.name: t for t in WORKER_TOOLS}
@@ -164,7 +165,7 @@ Web        : web_search, web_fetch
 Gmail      : gmail_list_unread, gmail_read, gmail_search, gmail_send
 Drive      : drive_list, drive_read, drive_write, drive_download, drive_upload
 Calendar   : calendar_list_events, calendar_create_event
-Telegram   : telegram_send  (automation runs only — notify the user)
+Telegram   : telegram_send, telegram_ask
 
 ━━━ DRIVE RULES ━━━
 - To download a file: ALWAYS call drive_list first to get the real file_id. Never guess it.
@@ -205,13 +206,6 @@ is provided at the top of the message. Read it carefully and act on it directly.
 For email triggers: the full email is provided — read it, do not call gmail_read again.
 For file triggers: the file path is provided — call read_file on that exact path.
 For cron triggers: execute the task immediately, do not wait for confirmation.
-
-━━━ TELEGRAM RULES ━━━
-- Call telegram_send ONLY when the action_prompt explicitly asks you to notify, alert, or send a notification.
-- Keep the message 2-3 sentences, plain text only — no markdown, no bullet points.
-- Never call telegram_send more than once per run.
-- Only call telegram_send during automation runs — NEVER during regular user chat sessions.
-- If telegram_send returns "Telegram not configured", continue normally — do not treat it as an error.
 
 ━━━ MULTI-AGENT ORCHESTRATION ━━━
 Use spawn_workers ONLY when a task has genuinely independent parallel sub-tasks
@@ -412,10 +406,7 @@ async def _worker_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             continue
 
         try:
-            if asyncio.iscoroutinefunction(t.func if hasattr(t, "func") else t):
-                result = await t.ainvoke(tool_args)
-            else:
-                result = await asyncio.to_thread(t.invoke, tool_args)
+            result = await t.ainvoke(tool_args)
 
             result_str = str(result)
             tool_messages.append(ToolMessage(tool_call_id=tool_call_id, content=result_str))
@@ -493,6 +484,7 @@ SUPERVISOR_TOOLS = [
     web_fetch,
     *GOOGLE_TOOLS,
     telegram_send,
+    telegram_ask,
     spawn_workers_tool,
 ]
 
@@ -654,10 +646,7 @@ async def policy_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             continue
 
         try:
-            if asyncio.iscoroutinefunction(t.func if hasattr(t, "func") else t):
-                result = await t.ainvoke(tool_args)
-            else:
-                result = await asyncio.to_thread(t.invoke, tool_args)
+            result = await t.ainvoke(tool_args)
             tool_messages.append(ToolMessage(tool_call_id=tool_call_id, content=str(result)))
         except Exception as exc:
             tool_messages.append(

@@ -23,3 +23,19 @@ SESSION_TTL_SECONDS: int = int(os.environ.get("SESSION_TTL_SECONDS", str(7 * 24 
 
 # Phase 3 — OpenAI API key for streaming chat completions
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
+
+# Phase 5 — workspace directory the assistant is allowed to touch
+WORKSPACE_DIR: Path = Path(
+    os.environ.get("WORKSPACE_DIR", str(BASE_DIR / "workspace"))
+).resolve()
+
+# Phase 8 — Google OAuth credentials (Desktop app type)
+GOOGLE_CLIENT_ID: str = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET: str = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+# Fernet key for encrypting OAuth tokens at rest.
+# Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+FERNET_KEY: str = os.environ.get("FERNET_KEY", "")
+
+# Telegram notifications
+TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID: str = os.environ.get("TELEGRAM_CHAT_ID", "")

@@ -95,15 +95,32 @@ Do NOT tell the assistant to look for a file — it has the path. Focus on what 
   GOOD: "Read the new file shown above and translate its entire contents to Hindi. Save the translation to the same filename with _hindi appended, inside my workspace."
 
 ━━━ TELEGRAM NOTIFICATIONS ━━━
-If the user's description mentions notifying, alerting, pinging, or sending a notification,
-append the following sentence to the end of action_prompt (adapt the italicised part to context):
+Two tools are available for Telegram: telegram_send and telegram_ask.
 
-For email triggers  → "Then call telegram_send with a 2-sentence summary: who sent the email and what action was taken."
-For cron triggers   → "Then call telegram_send with a 2-sentence summary of what was done and the current IST time."
-For file triggers   → "Then call telegram_send with a 1-sentence note: what file arrived and what was done with it."
+telegram_send → one-way notification. Use when no reply is needed.
+telegram_ask  → two-way. Use when the automation needs the user's input before continuing
+                (e.g. "ask me what to reply", "show me the draft first", "ask for my approval").
 
-Keep the telegram_send instruction as the LAST sentence of action_prompt.
-Do NOT add it if the user did not mention notification/alert/notify/ping.
+CHOOSING WHICH TO USE:
+- "notify me", "send me a summary", "ping me" → telegram_send
+- "ask me for a reply", "let me review", "ask me before sending", "show me the draft" → telegram_ask
+
+RULE — Never use both in the same action_prompt in a way that creates two back-and-forth rounds.
+
+FOR telegram_ask, the action_prompt must:
+1. Summarize the trigger content (email body, file contents, etc.)
+2. Call telegram_ask with:
+   - question: the summary + what you're asking the user (e.g. "What should I reply?")
+   - continuation_prompt: FULL instructions for what to do with the user's reply.
+     This must be self-contained — include recipient email, original email context, etc.
+
+EXAMPLE for "if mail comes from X, ask me for a reply then send it":
+  action_prompt: "Read the email above. Summarize it in 3 sentences. Then call telegram_ask with:
+    question: Show the summary then ask 'What should I reply?'
+    continuation_prompt: 'The user replied to an email. Using the user reply below, write a polite professional email and send it to the original sender using gmail_send. Sign as Maharshi.'"
+
+Do NOT use telegram_ask if the user did not mention asking/reviewing/approving.
+Do NOT use telegram_send at all if the user did not mention notify/send me/ping me.
 
 Output ONLY the JSON object."""
 

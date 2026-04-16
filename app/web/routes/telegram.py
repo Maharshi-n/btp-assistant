@@ -35,24 +35,26 @@ async def _download_telegram_file(token: str, message: dict) -> tuple[str, str] 
         photos = message["photo"]
         if photos:
             file_id = photos[-1].get("file_id")
-            original_name = f"{file_id}.jpg"
+            # Photos have no original filename — use a short timestamp
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            original_name = f"photo_{ts}.jpg"
     elif "audio" in message:
         audio = message["audio"]
         file_id = audio.get("file_id")
-        original_name = audio.get("file_name") or f"{file_id}.mp3"
+        original_name = audio.get("file_name") or f"audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
     elif "voice" in message:
         voice = message["voice"]
         file_id = voice.get("file_id")
-        original_name = f"{file_id}.ogg"
+        original_name = f"voice_{datetime.now().strftime('%Y%m%d_%H%M%S')}.ogg"
     elif "video" in message:
         video = message["video"]
         file_id = video.get("file_id")
-        original_name = video.get("file_name") or f"{file_id}.mp4"
+        original_name = video.get("file_name") or f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
 
     if not file_id:
         return None
 
-    filename = (original_name or "").strip() or f"{file_id}.bin"
+    filename = (original_name or "").strip() or f"file_{datetime.now().strftime('%Y%m%d_%H%M%S')}.bin"
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -418,17 +420,20 @@ async def telegram_webhook(
         if intent:
             prompt = (
                 f"{intent}\n\n"
-                f"The file has been saved to workspace/telegram_uploads/{filename} — "
-                f"use that path directly with filesystem tools (do not try to read binary files)."
+                f"Context: the file has already been downloaded and saved locally to "
+                f"workspace/telegram_uploads/{filename}. "
+                f"Use filesystem tools (copy_file, move_file, list_dir, etc.) to act on it — "
+                f"do NOT upload to Google Drive or read binary content unless explicitly asked."
             )
         else:
             prompt = (
-                f"User sent a file via Telegram. It has been saved to "
+                f"User sent a file via Telegram. It has been saved locally to "
                 f"workspace/telegram_uploads/{filename}. "
-                f"Use that path with filesystem tools. What should I do with it?"
+                f"Ask the user what they'd like to do with it."
             )
 
-        # Reuse active thread from TelegramPendingReply, then pending file, then create new
+        # Reuse active thread from TelegramPendingReply (and clear it so _has_pending_reply
+        # returns False after the agent runs), then pending file's thread, then create new.
         thread_id: int | None = None
         now_file = datetime.now(timezone.utc)
         async with AsyncSessionLocal() as db:
@@ -440,6 +445,11 @@ async def telegram_webhook(
             active_tpr = tpr_result.scalars().first()
             if active_tpr:
                 thread_id = active_tpr.thread_id
+                # Clear it now so _has_pending_reply is False when _run_file_task checks
+                await db.execute(
+                    delete(TelegramPendingReply).where(TelegramPendingReply.chat_id == chat_id)
+                )
+                await db.commit()
 
         if not thread_id and pending_file:
             thread_id = pending_file.get("thread_id")

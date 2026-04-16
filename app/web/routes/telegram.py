@@ -550,6 +550,47 @@ async def telegram_webhook(
                             )
                     except Exception:
                         pass
+                return {"ok": True}
+            elif pending_file_row:
+                # User redirected away from file intent — run agent with new text
+                redirect_thread_id = pending_file_row.get("thread_id")
+                if not redirect_thread_id:
+                    async with AsyncSessionLocal() as db:
+                        new_thread = Thread(title=text[:60], model="gpt-4o")
+                        db.add(new_thread)
+                        await db.commit()
+                        await db.refresh(new_thread)
+                        redirect_thread_id = new_thread.id
+                if token:
+                    try:
+                        async with httpx.AsyncClient(timeout=5) as client:
+                            await client.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": "Got it. Working on it..."},
+                            )
+                    except Exception:
+                        pass
+
+                async def _run_redirect(tid: int) -> None:
+                    result_text = await _run_direct_thread(text, tid)
+                    new_pending = await _has_pending_reply(chat_id)
+                    if not new_pending and token:
+                        try:
+                            reply_body = result_text[:1000] + ("..." if len(result_text) > 1000 else "")
+                            async with httpx.AsyncClient(timeout=10) as client:
+                                await client.post(
+                                    f"https://api.telegram.org/bot{token}/sendMessage",
+                                    json={"chat_id": chat_id, "text": reply_body},
+                                )
+                                await client.post(
+                                    f"https://api.telegram.org/bot{token}/sendMessage",
+                                    json={"chat_id": chat_id, "text": "Anything else?"},
+                                )
+                        except Exception as exc:
+                            logger.warning("telegram webhook: redirect task failed to send result: %s", exc)
+                        await _register_pending_reply(chat_id, tid, conversation_id=None)
+
+                asyncio.create_task(_run_redirect(redirect_thread_id))
             return {"ok": True}
 
         conversation_id = pending.conversation_id

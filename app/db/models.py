@@ -174,6 +174,25 @@ class TelegramPendingFile(Base):
     )
 
 
+class TelegramPendingFileItem(Base):
+    """One row per file accumulated for multi-file batch processing.
+
+    Files accumulate here when the user sends multiple files before giving
+    an intent. When the user sends a text (the intent), or types 'done',
+    all items for that chat_id are fetched, processed together, then deleted.
+    """
+    __tablename__ = "telegram_pending_file_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    chat_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    filename: Mapped[str] = mapped_column(String(256), nullable=False)
+    file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(_DT, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        _DT, server_default=func.now(), nullable=False
+    )
+
+
 class Skill(Base):
     __tablename__ = "skills"
 

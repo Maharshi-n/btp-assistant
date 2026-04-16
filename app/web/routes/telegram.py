@@ -13,7 +13,7 @@ import app.config as app_config
 from app.db.engine import AsyncSessionLocal
 import httpx
 
-from app.db.models import Message, TelegramPendingFile, TelegramPendingReply, Thread
+from app.db.models import Message, TelegramPendingFile, TelegramPendingFileItem, TelegramPendingReply, Thread
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +144,134 @@ async def _get_and_clear_pending_file(chat_id: str) -> dict | None:
         )
         await db.commit()
         return data
+
+
+async def _add_pending_file_item(chat_id: str, filename: str, file_path: str) -> int:
+    """Append one downloaded file to the multi-file accumulation queue.
+
+    Returns the total number of accumulated files for this chat_id (after adding).
+    """
+    expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+    async with AsyncSessionLocal() as db:
+        db.add(TelegramPendingFileItem(
+            chat_id=chat_id,
+            filename=filename,
+            file_path=file_path,
+            expires_at=expires,
+        ))
+        await db.commit()
+        result = await db.execute(
+            select(TelegramPendingFileItem)
+            .where(TelegramPendingFileItem.chat_id == chat_id)
+            .where(TelegramPendingFileItem.expires_at > datetime.now(timezone.utc))
+        )
+        return len(result.scalars().all())
+
+
+async def _get_and_clear_pending_file_items(chat_id: str) -> list[dict]:
+    """Return all accumulated file items for this chat_id and delete them.
+
+    Returns a list of dicts with 'filename' and 'file_path' keys.
+    Returns an empty list if none exist.
+    """
+    now = datetime.now(timezone.utc)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(TelegramPendingFileItem)
+            .where(TelegramPendingFileItem.chat_id == chat_id)
+            .where(TelegramPendingFileItem.expires_at > now)
+            .order_by(TelegramPendingFileItem.created_at.asc())
+        )
+        rows = result.scalars().all()
+        if not rows:
+            return []
+        items = [{"filename": r.filename, "file_path": r.file_path} for r in rows]
+        await db.execute(
+            delete(TelegramPendingFileItem).where(TelegramPendingFileItem.chat_id == chat_id)
+        )
+        await db.commit()
+        return items
+
+
+async def _parse_reminder_datetime(text: str) -> datetime | None:
+    """Use OpenAI to extract a future datetime from natural language reminder text.
+
+    Returns a timezone-aware datetime or None if parsing fails.
+    """
+    from openai import AsyncOpenAI
+    import app.config as _cfg
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    prompt = (
+        f"Current time: {now_str}\n"
+        f"User said: \"{text}\"\n\n"
+        "Extract the datetime the user wants to be reminded. "
+        "Output ONLY an ISO 8601 datetime string in UTC (e.g. 2026-04-16T17:00:00Z). "
+        "If you cannot determine a specific future time, output: UNKNOWN"
+    )
+    try:
+        client = AsyncOpenAI(api_key=_cfg.OPENAI_API_KEY)
+        resp = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=30,
+            temperature=0,
+        )
+        raw = resp.choices[0].message.content.strip()
+        if raw == "UNKNOWN":
+            return None
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+async def _parse_and_schedule_reminder(remind_text: str, chat_id: str, token: str | None) -> str:
+    """Parse reminder text, schedule a one-shot APScheduler job, return confirmation string."""
+    fire_at = await _parse_reminder_datetime(remind_text)
+    if fire_at is None:
+        return "Couldn't understand the time. Try: /remind at 5pm check the report"
+
+    now = datetime.now(timezone.utc)
+    if fire_at <= now:
+        return "That time is in the past. Please specify a future time."
+
+    # The reminder message is everything after the time expression.
+    # We pass the full remind_text as the reminder content — the agent sent it.
+    reminder_msg = remind_text
+
+    from app.automations.runtime import get_scheduler
+    from apscheduler.triggers.date import DateTrigger
+
+    scheduler = get_scheduler()
+    if scheduler is None or not scheduler.running:
+        return "Scheduler is not running. Please restart RAION."
+
+    job_id = f"remind_{chat_id}_{int(fire_at.timestamp())}"
+    scheduler.add_job(
+        _fire_reminder,
+        DateTrigger(run_date=fire_at),
+        id=job_id,
+        args=[chat_id, token, reminder_msg],
+        replace_existing=True,
+        max_instances=1,
+    )
+
+    # Human-friendly confirmation
+    local_str = fire_at.strftime("%b %d at %H:%M UTC")
+    return f"Reminder set for {local_str}."
+
+
+async def _fire_reminder(chat_id: str, token: str | None, message: str) -> None:
+    """Fire a one-shot Telegram reminder."""
+    if not token:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": f"Reminder: {message}"},
+            )
+    except Exception as exc:
+        logger.warning("_fire_reminder: failed to send: %s", exc)
 
 
 def _smart_truncate(text: str, limit: int = 3800) -> str:
@@ -434,7 +562,7 @@ async def telegram_webhook(
 
         filename, file_path = result
 
-        # Get intent: caption > stored pending intent > generic fallback
+        # Determine intent: caption > stored pending intent > None (accumulate)
         pending_file = await _get_and_clear_pending_file(chat_id)
         if text:
             if pending_file:
@@ -448,13 +576,48 @@ async def telegram_webhook(
         else:
             intent = None
 
-        file_context = (
-            f"[File context] The user sent a file via Telegram. "
-            f"It has been saved to workspace/telegram_uploads/{filename}. "
-            f"Use filesystem tools (copy_file, move_file, list_dir, etc.) to act on it. "
-            f"Do NOT upload to Google Drive or read binary content unless explicitly asked."
-        )
-        prompt = intent if intent else "I just sent you a file — what can you do with it?"
+        if intent is None:
+            # No intent yet — accumulate this file and ask what to do with it.
+            # Any previously accumulated files stay queued too.
+            total = await _add_pending_file_item(chat_id, filename, file_path)
+            if token:
+                try:
+                    async with httpx.AsyncClient(timeout=5) as client:
+                        if total == 1:
+                            prompt_txt = f"Got {filename}. What should I do with it? (Send more files or tell me now)"
+                        else:
+                            prompt_txt = f"Got {filename} ({total} files queued). Send more or tell me what to do, or type 'done' to process with a generic action."
+                        await client.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={"chat_id": chat_id, "text": prompt_txt},
+                        )
+                except Exception:
+                    pass
+            return {"ok": True}
+
+        # We have an intent — also grab any previously accumulated files and process all together.
+        accumulated = await _get_and_clear_pending_file_items(chat_id)
+        # Add the current file to the batch
+        all_files = accumulated + [{"filename": filename, "file_path": file_path}]
+
+        if len(all_files) == 1:
+            file_context = (
+                f"[File context] The user sent a file via Telegram. "
+                f"It has been saved to workspace/telegram_uploads/{filename}. "
+                f"Use filesystem tools (copy_file, move_file, list_dir, etc.) to act on it. "
+                f"Do NOT upload to Google Drive or read binary content unless explicitly asked."
+            )
+        else:
+            file_list = "\n".join(
+                f"  - workspace/telegram_uploads/{f['filename']}" for f in all_files
+            )
+            file_context = (
+                f"[File context] The user sent {len(all_files)} files via Telegram:\n{file_list}\n"
+                f"Use filesystem tools (copy_file, move_file, list_dir, etc.) to act on them. "
+                f"Do NOT upload to Google Drive or read binary content unless explicitly asked."
+            )
+
+        prompt = intent
 
         # Reuse active thread from TelegramPendingReply (and clear it so _has_pending_reply
         # returns False after the agent runs), then pending file's thread, then create new.
@@ -642,6 +805,32 @@ async def telegram_webhook(
                 pass
         return {"ok": True}
 
+    # ── /help — list all commands ─────────────────────────────────────────────
+    if _text_norm.lower() in ("/help", "/help "):
+        reply = (
+            "Commands:\n"
+            "/newthread [title] — start a new thread\n"
+            "/thread — show active thread\n"
+            "/model [name] — view or change AI model\n"
+            "/remember <fact> — save something to memory\n"
+            "/ls [folder] — list workspace files\n"
+            "/remind <when> <what> — set a one-off reminder\n"
+            "  e.g. /remind at 5pm review the report\n"
+            "  e.g. /remind in 30 minutes check email\n\n"
+            "Send a file anytime — I'll ask what to do with it.\n"
+            "Send multiple files then type 'done' to process them all together."
+        )
+        if token:
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": reply},
+                    )
+            except Exception:
+                pass
+        return {"ok": True}
+
     # ── /remember <text> — save a memory entry ───────────────────────────────
     if _text_norm.lower().startswith("/remember") or _text_norm.lower().startswith("/memory "):
         _cmd = "/remember" if _text_norm.lower().startswith("/remember") else "/memory"
@@ -710,6 +899,24 @@ async def telegram_webhook(
                 pass
         return {"ok": True}
 
+    # ── /remind <when> <what> — one-off reminder via Telegram ────────────────
+    if _text_norm.lower().startswith("/remind"):
+        remind_text = _text_norm[len("/remind"):].strip()
+        if not remind_text:
+            reply = "Usage: /remind <when> <what>\nExamples:\n  /remind at 5pm review the report\n  /remind in 30 minutes check email"
+        else:
+            reply = await _parse_and_schedule_reminder(remind_text, chat_id, token)
+        if token:
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": reply},
+                    )
+            except Exception:
+                pass
+        return {"ok": True}
+
     # Check end-of-conversation BEFORE looking up pending — if the user says
     # "no"/"done"/etc., we close the loop without running the supervisor.
 
@@ -724,6 +931,81 @@ async def telegram_webhook(
         pending = result.scalars().first()
 
         if pending is None:
+            # ── Multi-file "done" or intent for accumulated files ─────────────────
+            # If the user has queued files and now sends text, treat it as the intent.
+            # "done" (or similar) triggers processing with a generic instruction.
+            _accumulated = await _get_and_clear_pending_file_items(chat_id)
+            if _accumulated:
+                _done_words = {"done", "process", "go", "ok", "okay", "proceed", "yes"}
+                _lower_text = text.lower().strip().rstrip("!.?")
+                _is_done_signal = _lower_text in _done_words
+                _batch_intent = (
+                    "Process these files — copy or organise them as appropriate."
+                    if _is_done_signal
+                    else text
+                )
+                _file_list = "\n".join(
+                    f"  - workspace/telegram_uploads/{f['filename']}" for f in _accumulated
+                )
+                _batch_file_context = (
+                    f"[File context] The user sent {len(_accumulated)} file(s) via Telegram:\n{_file_list}\n"
+                    f"Use filesystem tools (copy_file, move_file, list_dir, etc.) to act on them. "
+                    f"Do NOT upload to Google Drive or read binary content unless explicitly asked."
+                )
+                # Resolve thread
+                _batch_thread_id: int | None = None
+                _now_batch = datetime.now(timezone.utc)
+                async with AsyncSessionLocal() as db:
+                    _tpr_r = await db.execute(
+                        select(TelegramPendingReply)
+                        .where(TelegramPendingReply.chat_id == chat_id)
+                        .where(TelegramPendingReply.expires_at > _now_batch)
+                    )
+                    _active_tpr = _tpr_r.scalars().first()
+                    if _active_tpr:
+                        _batch_thread_id = _active_tpr.thread_id
+                        await db.execute(
+                            delete(TelegramPendingReply).where(TelegramPendingReply.chat_id == chat_id)
+                        )
+                        await db.commit()
+                if not _batch_thread_id:
+                    async with AsyncSessionLocal() as db:
+                        _bt = Thread(title=_batch_intent[:60], model="gpt-4o-mini")
+                        db.add(_bt)
+                        await db.commit()
+                        await db.refresh(_bt)
+                        _batch_thread_id = _bt.id
+                if token:
+                    try:
+                        async with httpx.AsyncClient(timeout=5) as client:
+                            await client.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": "Got it, working on it..."},
+                            )
+                    except Exception:
+                        pass
+
+                async def _run_batch(tid: int, intent_p: str, fc: str) -> None:
+                    result_text = await _run_direct_thread(intent_p, tid, file_context=fc)
+                    new_pending = await _has_pending_reply(chat_id)
+                    if not new_pending and token:
+                        try:
+                            async with httpx.AsyncClient(timeout=10) as client:
+                                await client.post(
+                                    f"https://api.telegram.org/bot{token}/sendMessage",
+                                    json={"chat_id": chat_id, "text": _smart_truncate(result_text)},
+                                )
+                                await client.post(
+                                    f"https://api.telegram.org/bot{token}/sendMessage",
+                                    json={"chat_id": chat_id, "text": "..."},
+                                )
+                        except Exception as exc:
+                            logger.warning("telegram batch task: failed to send result: %s", exc)
+                    await _register_pending_reply(chat_id, tid, conversation_id=None)
+
+                asyncio.create_task(_run_batch(_batch_thread_id, _batch_intent, _batch_file_context))
+                return {"ok": True}
+
             # No automation pending — check if user is hinting a file is coming
             pending_file_row = await _get_and_clear_pending_file(chat_id)
             if _text_hints_file(text):

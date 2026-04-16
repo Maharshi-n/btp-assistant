@@ -14,16 +14,20 @@ from app.agents.supervisor import init_supervisor, shutdown_supervisor
 from app.automations.runtime import start_automations_runtime, stop_automations_runtime
 import app.config as app_config
 from app.db.engine import get_db, init_db
-from app.db.models import Automation, AutomationRun, Message, OAuthToken, TelegramPendingReply, Thread, User  # noqa: F401 — ensures models are registered
+from app.db.models import Automation, AutomationConversation, AutomationRun, AutoMemoryConfig, MCPServer, MCPTool, Message, OAuthToken, ScheduledTask, ScheduledTaskRun, Skill, TelegramPendingFile, TelegramPendingReply, Thread, User, UserMemory  # noqa: F401 — ensures models are registered
 from app.db.seed import seed_admin
 from app.web.deps import NotAuthenticated, require_user
 from app.web.routes.audit import router as audit_router
 from app.web.routes.auth import router as auth_router
 from app.web.routes.automations import router as automations_router
 from app.web.routes.telegram import router as telegram_router
+from app.web.routes.connectors import router as connectors_router
+from app.web.routes.tasks import router as tasks_router
 from app.web.routes.chat import AVAILABLE_MODELS, router as chat_router
 from app.web.routes.health import router as health_router
 from app.web.routes.permissions import router as permissions_router
+from app.web.routes.memory import router as memory_router
+from app.web.routes.skills import router as skills_router
 from app.web.routes.settings import router as settings_router
 from app.web.routes.ws import router as ws_router
 
@@ -60,7 +64,11 @@ app.include_router(permissions_router)
 app.include_router(settings_router)
 app.include_router(ws_router)
 app.include_router(automations_router)
+app.include_router(memory_router)
+app.include_router(skills_router)
 app.include_router(telegram_router)
+app.include_router(connectors_router)
+app.include_router(tasks_router)
 
 
 @app.exception_handler(NotAuthenticated)
@@ -76,6 +84,15 @@ async def on_startup() -> None:
     await init_supervisor()
     await start_automations_runtime()
     await _reregister_telegram_webhook()
+    await _warm_mcp_manager()
+    await _register_scheduled_tasks()
+    from app.automations.conversations import cleanup_old_conversations
+    try:
+        n = await cleanup_old_conversations()
+        if n:
+            logging.getLogger(__name__).info("Cleaned up %d old conversations", n)
+    except Exception:
+        pass
 
 
 async def _reregister_telegram_webhook() -> None:
@@ -107,10 +124,48 @@ async def _reregister_telegram_webhook() -> None:
         )
 
 
+async def _warm_mcp_manager() -> None:
+    """Connect all enabled MCP servers on startup."""
+    try:
+        from sqlalchemy import select
+        from app.db.engine import AsyncSessionLocal
+        from app.db.models import MCPServer
+        from app.mcp.manager import get_manager
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(MCPServer).where(MCPServer.enabled == True))  # noqa: E712
+            servers = result.scalars().all()
+        if servers:
+            await get_manager().reconnect_all(servers)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("MCP warm-up error: %s", exc)
+
+
+async def _register_scheduled_tasks() -> None:
+    """Register all enabled scheduled tasks with APScheduler on startup."""
+    try:
+        from app.db.engine import AsyncSessionLocal
+        from app.db.models import ScheduledTask
+        from app.web.routes.tasks import _register_task
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(ScheduledTask).where(ScheduledTask.enabled == True))  # noqa: E712
+            tasks = result.scalars().all()
+        for task in tasks:
+            _register_task(task)
+        if tasks:
+            logging.getLogger(__name__).info("Registered %d scheduled tasks", len(tasks))
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Failed to register scheduled tasks: %s", exc)
+
+
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
     await stop_automations_runtime()
     await shutdown_supervisor()
+    try:
+        from app.mcp.manager import get_manager
+        await get_manager().shutdown_all()
+    except Exception:
+        pass
 
 
 @app.get("/")

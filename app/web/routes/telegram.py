@@ -87,6 +87,66 @@ async def _download_telegram_file(token: str, message: dict) -> tuple[str, str] 
         return None
 
 
+# Keywords that suggest the user is about to send a file
+_FILE_HINT_KEYWORDS = {
+    "upload", "uploading", "sending", "will send", "attaching", "file",
+    "document", "pdf", "image", "photo", "here is", "here's", "check this",
+}
+
+
+def _text_hints_file(text: str) -> bool:
+    """Return True if the text suggests a file is about to be sent."""
+    lower = text.lower()
+    return any(kw in lower for kw in _FILE_HINT_KEYWORDS)
+
+
+async def _store_pending_file(
+    chat_id: str,
+    intent_text: str,
+    thread_id: int | None = None,
+    conversation_id: int | None = None,
+) -> None:
+    """Upsert a TelegramPendingFile row for this chat_id."""
+    from app.db.models import TelegramPendingFile
+    from sqlalchemy import delete as sa_delete
+
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            sa_delete(TelegramPendingFile).where(TelegramPendingFile.chat_id == chat_id)
+        )
+        db.add(TelegramPendingFile(
+            chat_id=chat_id,
+            intent_text=intent_text,
+            thread_id=thread_id,
+            conversation_id=conversation_id,
+        ))
+        await db.commit()
+
+
+async def _get_and_clear_pending_file(chat_id: str) -> dict | None:
+    """Return pending file intent dict and delete the row. Returns None if none exists."""
+    from app.db.models import TelegramPendingFile
+    from sqlalchemy import delete as sa_delete, select as sa_select
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            sa_select(TelegramPendingFile).where(TelegramPendingFile.chat_id == chat_id)
+        )
+        row = result.scalars().first()
+        if row is None:
+            return None
+        data = {
+            "intent_text": row.intent_text,
+            "thread_id": row.thread_id,
+            "conversation_id": row.conversation_id,
+        }
+        await db.execute(
+            sa_delete(TelegramPendingFile).where(TelegramPendingFile.chat_id == chat_id)
+        )
+        await db.commit()
+        return data
+
+
 router = APIRouter()
 
 # Phrases that mean the user wants to end the conversation

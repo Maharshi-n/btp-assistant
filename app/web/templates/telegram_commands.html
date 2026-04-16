@@ -1,0 +1,260 @@
+{% extends "base.html" %}
+
+{% block title %}Telegram Commands — RAION{% endblock %}
+
+{% block content %}
+<div class="min-h-screen bg-gray-50">
+
+  <!-- Top bar -->
+  <header class="bg-white border-b shadow-sm px-6 py-4 flex items-center gap-4">
+    <a href="/" class="text-gray-500 hover:text-gray-800 transition-colors">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+      </svg>
+    </a>
+    <h1 class="text-base font-semibold text-gray-800">Telegram Commands</h1>
+    <span class="ml-auto text-xs text-gray-400" id="count-label">
+      {{ commands|length }} command{{ '' if commands|length == 1 else 's' }}
+    </span>
+  </header>
+
+  <main class="max-w-2xl mx-auto px-4 py-8 space-y-6">
+
+    <!-- Create card -->
+    <section class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="px-6 py-4 border-b bg-gray-50 flex items-center gap-2">
+        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+        </svg>
+        <h2 class="text-sm font-semibold text-gray-700">Add Command</h2>
+      </div>
+      <div class="px-6 py-5 space-y-4">
+
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">
+            Command name <span class="text-gray-400">(lowercase, no spaces — without the /)</span>
+          </label>
+          <input id="cmd-name" type="text" placeholder="e.g. standup, summary, checkin"
+                 class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm
+                        focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">
+            Description <span class="text-gray-400">(shown in /help)</span>
+          </label>
+          <input id="cmd-description" type="text"
+                 placeholder="e.g. Daily standup summary"
+                 class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm
+                        focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">
+            Preset prompt <span class="text-gray-400">(optional — baked-in instruction for the agent)</span>
+          </label>
+          <textarea id="cmd-preset" rows="3"
+                    placeholder="e.g. Summarize my pending tasks and format as a standup update"
+                    class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm
+                           focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"></textarea>
+        </div>
+
+        <div class="flex justify-end">
+          <button onclick="createCommand()"
+                  class="px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-medium
+                         hover:bg-blue-700 transition-colors">
+            Add Command
+          </button>
+        </div>
+
+        <p id="create-error" class="hidden text-xs text-red-600"></p>
+        <p id="create-success" class="hidden text-xs text-green-600"></p>
+      </div>
+    </section>
+
+    <!-- Commands list -->
+    <div id="commands-list" class="space-y-3">
+      {% if not commands %}
+      <div id="empty-state" class="text-center py-12 text-gray-400 text-sm">
+        No commands yet. Add one above.
+      </div>
+      {% else %}
+      {% for c in commands %}
+      <div id="cmd-{{ c.id }}" class="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-4">
+        <div class="flex items-start gap-3">
+          <svg class="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+          </svg>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-mono text-sm font-semibold text-gray-800">/{{ c.name }}</span>
+              {% if c.enabled %}
+              <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">enabled</span>
+              {% else %}
+              <span class="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">disabled</span>
+              {% endif %}
+            </div>
+            <p class="text-xs text-gray-600 mt-1">{{ c.description }}</p>
+            {% if c.preset_prompt %}
+            <p class="text-xs text-gray-400 mt-1 italic truncate" title="{{ c.preset_prompt }}">
+              {{ c.preset_prompt[:80] }}{% if c.preset_prompt|length > 80 %}…{% endif %}
+            </p>
+            {% endif %}
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            {% if c.enabled %}
+            <button onclick="toggleCommand({{ c.id }}, false)"
+                    class="text-xs text-gray-500 hover:text-gray-800 border border-gray-200
+                           px-2 py-1 rounded-lg transition-colors">
+              Disable
+            </button>
+            {% else %}
+            <button onclick="toggleCommand({{ c.id }}, true)"
+                    class="text-xs text-blue-600 hover:text-blue-800 border border-blue-200
+                           px-2 py-1 rounded-lg transition-colors">
+              Enable
+            </button>
+            {% endif %}
+            <button onclick="deleteCommand({{ c.id }})"
+                    class="text-gray-300 hover:text-red-500 transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+      {% endif %}
+    </div>
+
+  </main>
+</div>
+
+<script>
+  let cmdCount = {{ commands|length }};
+
+  function updateCountLabel() {
+    const label = document.getElementById('count-label');
+    label.textContent = cmdCount + ' command' + (cmdCount !== 1 ? 's' : '');
+  }
+
+  async function createCommand() {
+    const name = document.getElementById('cmd-name').value.trim();
+    const description = document.getElementById('cmd-description').value.trim();
+    const preset = document.getElementById('cmd-preset').value.trim();
+    const errorEl = document.getElementById('create-error');
+    const successEl = document.getElementById('create-success');
+
+    errorEl.classList.add('hidden');
+    successEl.classList.add('hidden');
+
+    if (!name) { showError('Command name is required.'); return; }
+    if (!description) { showError('Description is required.'); return; }
+
+    const form = new FormData();
+    form.append('name', name);
+    form.append('description', description);
+    form.append('preset_prompt', preset);
+
+    try {
+      const resp = await fetch('/api/telegram-commands', { method: 'POST', body: form });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || 'Create failed');
+
+      document.getElementById('cmd-name').value = '';
+      document.getElementById('cmd-description').value = '';
+      document.getElementById('cmd-preset').value = '';
+
+      successEl.textContent = `Command "/${data.name}" added.`;
+      successEl.classList.remove('hidden');
+
+      const empty = document.getElementById('empty-state');
+      if (empty) empty.remove();
+
+      const list = document.getElementById('commands-list');
+      const card = document.createElement('div');
+      card.id = 'cmd-' + data.id;
+      card.className = 'bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-4';
+      const presetHtml = data.preset_prompt
+        ? `<p class="text-xs text-gray-400 mt-1 italic truncate" title="${escapeHtml(data.preset_prompt)}">${escapeHtml(data.preset_prompt.slice(0, 80))}${data.preset_prompt.length > 80 ? '…' : ''}</p>`
+        : '';
+      card.innerHTML = `
+        <div class="flex items-start gap-3">
+          <svg class="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+          </svg>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="font-mono text-sm font-semibold text-gray-800">/${escapeHtml(data.name)}</span>
+              <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">enabled</span>
+            </div>
+            <p class="text-xs text-gray-600 mt-1">${escapeHtml(data.description)}</p>
+            ${presetHtml}
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <button onclick="toggleCommand(${data.id}, false)"
+                    class="text-xs text-gray-500 hover:text-gray-800 border border-gray-200
+                           px-2 py-1 rounded-lg transition-colors">
+              Disable
+            </button>
+            <button onclick="deleteCommand(${data.id})"
+                    class="text-gray-300 hover:text-red-500 transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+        </div>`;
+      list.prepend(card);
+      cmdCount++;
+      updateCountLabel();
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+
+  async function toggleCommand(id, enable) {
+    const action = enable ? 'enable' : 'disable';
+    try {
+      const resp = await fetch(`/api/telegram-commands/${id}/${action}`, { method: 'POST' });
+      if (!resp.ok) throw new Error('Failed');
+      location.reload();
+    } catch (err) {
+      alert('Could not ' + action + ' command: ' + err.message);
+    }
+  }
+
+  async function deleteCommand(id) {
+    if (!confirm('Delete this command?')) return;
+    try {
+      const resp = await fetch('/api/telegram-commands/' + id, { method: 'DELETE' });
+      if (!resp.ok) throw new Error('Failed');
+      const card = document.getElementById('cmd-' + id);
+      if (card) card.remove();
+      cmdCount--;
+      updateCountLabel();
+      if (cmdCount === 0) {
+        document.getElementById('commands-list').innerHTML =
+          '<div id="empty-state" class="text-center py-12 text-gray-400 text-sm">No commands yet. Add one above.</div>';
+      }
+    } catch (err) {
+      alert('Could not delete command: ' + err.message);
+    }
+  }
+
+  function showError(msg) {
+    const el = document.getElementById('create-error');
+    el.textContent = msg;
+    el.classList.remove('hidden');
+  }
+
+  function escapeHtml(text) {
+    return String(text)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+</script>
+{% endblock %}

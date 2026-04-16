@@ -982,16 +982,6 @@
   }
 
   // ─── Skill autocomplete ───────────────────────────────────────────────────
-
-  // Built-in slash commands shown alongside skills in the dropdown
-  const _BUILTIN_COMMANDS = [
-    { name: "newthread",  trigger_description: "Start a new chat thread",                        builtin: true },
-    { name: "thread",     trigger_description: "Show the active thread info",                    builtin: true },
-    { name: "model",      trigger_description: "View or change the AI model  e.g. /model gpt-4o", builtin: true },
-    { name: "remember",   trigger_description: "Save a fact to memory  e.g. /remember my name is...", builtin: true },
-    { name: "ls",         trigger_description: "List workspace files  e.g. /ls telegram_uploads", builtin: true },
-  ];
-
   let _skillsCache = null;
 
   async function _fetchSkills() {
@@ -1018,16 +1008,10 @@
 
     const query = match[1].slice(1).toLowerCase(); // text after /
     const skills = await _fetchSkills();
-
-    // Merge built-ins first, then skills (skills may overlap by name — built-ins take priority)
-    const skillNames = new Set(skills.map(s => s.name));
-    const builtins = _BUILTIN_COMMANDS.filter(c => !skillNames.has(c.name));
-    const all = [...builtins, ...skills];
-
     const filtered = query === ''
-      ? all
-      : all.filter(s =>
-          s.name.toLowerCase().includes(query) ||
+      ? skills
+      : skills.filter(s =>
+          s.name.includes(query) ||
           s.trigger_description.toLowerCase().includes(query)
         );
 
@@ -1039,27 +1023,20 @@
     showSkillDropdown(filtered);
   }
 
-  function showSkillDropdown(items) {
+  function showSkillDropdown(skills) {
     const dropdown = document.getElementById('skill-dropdown');
-    dropdown.innerHTML = items.map((s, i) => {
-      const isBuiltin = s.builtin === true;
-      const badgeClass = isBuiltin
-        ? 'text-amber-600'
-        : 'text-blue-600';
-      const onclick = isBuiltin
-        ? `selectBuiltin('${escapeAttr(s.name)}')`
-        : `selectSkill('${escapeAttr(s.name)}', '${escapeAttr(s.trigger_description)}')`;
-      return `
+    dropdown.innerHTML = skills.map((s, i) => `
       <button type="button"
               data-skill-item
-              onclick="${onclick}"
+              data-skill-name="${escapeAttr(s.name)}"
+              data-skill-desc="${escapeAttr(s.trigger_description)}"
+              onclick="selectSkill('${escapeAttr(s.name)}', '${escapeAttr(s.trigger_description)}')"
               class="w-full text-left px-4 py-2.5 flex items-start gap-3 hover:bg-blue-50
                      hover:text-blue-800 transition-colors border-b border-gray-100 last:border-0
                      ${i === 0 ? 'bg-blue-50 text-blue-800' : 'text-gray-800'}">
-        <span class="font-mono text-xs font-semibold mt-0.5 ${badgeClass} shrink-0">/${escapeHtml(s.name)}</span>
+        <span class="font-mono text-xs font-semibold mt-0.5 text-blue-600 shrink-0">/${escapeHtml(s.name)}</span>
         <span class="text-xs text-gray-500 leading-relaxed">${escapeHtml(s.trigger_description)}</span>
-      </button>`;
-    }).join('');
+      </button>`).join('');
     dropdown.classList.remove('hidden');
   }
 
@@ -1067,22 +1044,6 @@
     const dropdown = document.getElementById('skill-dropdown');
     dropdown.classList.add('hidden');
     dropdown.innerHTML = '';
-  }
-
-  function selectBuiltin(name) {
-    const ta = document.getElementById('msg-input');
-    const val = ta.value;
-    const pos = ta.selectionStart;
-    const before = val.slice(0, pos);
-    // Replace the /... token with the command (leave cursor after it for args)
-    const replaced = before.replace(/(?:^|(\s))(\/\S*)$/, (m, space) =>
-      (space || '') + `/${name} `
-    );
-    ta.value = replaced + val.slice(pos);
-    ta.selectionStart = ta.selectionEnd = replaced.length;
-    hideSkillDropdown();
-    ta.focus();
-    autoResize(ta);
   }
 
   function selectSkill(name, desc) {

@@ -167,6 +167,8 @@ class TelegramPendingFile(Base):
     thread_id: Mapped[int] = mapped_column(Integer, nullable=True)
     # AutomationConversation id if triggered from an automation (nullable)
     conversation_id: Mapped[int] = mapped_column(Integer, nullable=True)
+    # Row expires after 10 minutes — stale entries are ignored
+    expires_at: Mapped[datetime] = mapped_column(_DT, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         _DT, server_default=func.now(), nullable=False
     )

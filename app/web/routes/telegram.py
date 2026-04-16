@@ -11,7 +11,9 @@ from sqlalchemy import delete, select
 
 import app.config as app_config
 from app.db.engine import AsyncSessionLocal
-from app.db.models import Message, TelegramPendingReply, Thread
+import httpx
+
+from app.db.models import Message, TelegramPendingFile, TelegramPendingReply, Thread
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +24,6 @@ async def _download_telegram_file(token: str, message: dict) -> tuple[str, str] 
     Supports: document, photo (largest), audio, voice, video.
     Returns (filename, absolute_path) on success, None on failure.
     """
-    import httpx
-    import app.config as _cfg
-
     file_id: str | None = None
     original_name: str | None = None
 
@@ -53,7 +52,7 @@ async def _download_telegram_file(token: str, message: dict) -> tuple[str, str] 
     if not file_id:
         return None
 
-    filename = original_name or f"{file_id}.bin"
+    filename = (original_name or "").strip() or f"{file_id}.bin"
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -75,7 +74,7 @@ async def _download_telegram_file(token: str, message: dict) -> tuple[str, str] 
                 logger.warning("_download_telegram_file: download failed %d", dl_resp.status_code)
                 return None
 
-            upload_dir = _cfg.WORKSPACE_DIR / "telegram_uploads"
+            upload_dir = app_config.WORKSPACE_DIR / "telegram_uploads"
             upload_dir.mkdir(parents=True, exist_ok=True)
             dest = upload_dir / filename
             dest.write_bytes(dl_resp.content)
@@ -107,30 +106,28 @@ async def _store_pending_file(
     conversation_id: int | None = None,
 ) -> None:
     """Upsert a TelegramPendingFile row for this chat_id."""
-    from app.db.models import TelegramPendingFile
-    from sqlalchemy import delete as sa_delete
-
+    expires = datetime.now(timezone.utc) + timedelta(minutes=10)
     async with AsyncSessionLocal() as db:
         await db.execute(
-            sa_delete(TelegramPendingFile).where(TelegramPendingFile.chat_id == chat_id)
+            delete(TelegramPendingFile).where(TelegramPendingFile.chat_id == chat_id)
         )
         db.add(TelegramPendingFile(
             chat_id=chat_id,
             intent_text=intent_text,
             thread_id=thread_id,
             conversation_id=conversation_id,
+            expires_at=expires,
         ))
         await db.commit()
 
 
 async def _get_and_clear_pending_file(chat_id: str) -> dict | None:
     """Return pending file intent dict and delete the row. Returns None if none exists."""
-    from app.db.models import TelegramPendingFile
-    from sqlalchemy import delete as sa_delete, select as sa_select
-
     async with AsyncSessionLocal() as db:
         result = await db.execute(
-            sa_select(TelegramPendingFile).where(TelegramPendingFile.chat_id == chat_id)
+            select(TelegramPendingFile)
+            .where(TelegramPendingFile.chat_id == chat_id)
+            .where(TelegramPendingFile.expires_at > datetime.now(timezone.utc))
         )
         row = result.scalars().first()
         if row is None:
@@ -141,7 +138,7 @@ async def _get_and_clear_pending_file(chat_id: str) -> dict | None:
             "conversation_id": row.conversation_id,
         }
         await db.execute(
-            sa_delete(TelegramPendingFile).where(TelegramPendingFile.chat_id == chat_id)
+            delete(TelegramPendingFile).where(TelegramPendingFile.chat_id == chat_id)
         )
         await db.commit()
         return data
@@ -169,13 +166,10 @@ async def _register_pending_reply(
     conversation_id: int | None = None,
 ) -> None:
     """Re-register a TelegramPendingReply so the next user message continues the loop."""
-    from app.db.models import TelegramPendingReply
-    from sqlalchemy import delete as sa_delete
-
     expires = datetime.now(timezone.utc) + timedelta(hours=24)
     async with AsyncSessionLocal() as db:
         await db.execute(
-            sa_delete(TelegramPendingReply).where(TelegramPendingReply.chat_id == chat_id)
+            delete(TelegramPendingReply).where(TelegramPendingReply.chat_id == chat_id)
         )
         pending = TelegramPendingReply(
             chat_id=chat_id,
@@ -403,7 +397,6 @@ async def telegram_webhook(
 
         if token:
             try:
-                import httpx
                 async with httpx.AsyncClient(timeout=5) as client:
                     await client.post(
                         f"https://api.telegram.org/bot{token}/sendMessage",
@@ -439,7 +432,6 @@ async def telegram_webhook(
 
         if token:
             try:
-                import httpx
                 async with httpx.AsyncClient(timeout=5) as client:
                     await client.post(
                         f"https://api.telegram.org/bot{token}/sendMessage",
@@ -477,7 +469,6 @@ async def telegram_webhook(
         logger.info("telegram webhook: end-of-conversation from chat_id=%s", chat_id)
         if token and chat_id:
             try:
-                import httpx
                 async with httpx.AsyncClient(timeout=5) as client:
                     await client.post(
                         f"https://api.telegram.org/bot{token}/sendMessage",
@@ -496,7 +487,6 @@ async def telegram_webhook(
         )
         if token and chat_id:
             try:
-                import httpx
                 async with httpx.AsyncClient(timeout=5) as client:
                     await client.post(
                         f"https://api.telegram.org/bot{token}/sendMessage",
@@ -512,7 +502,6 @@ async def telegram_webhook(
             new_pending = await _has_pending_reply(chat_id)
             if not new_pending and token and chat_id:
                 try:
-                    import httpx
                     reply_body = result_text[:1000] + ("..." if len(result_text) > 1000 else "")
                     async with httpx.AsyncClient(timeout=10) as client:
                         await client.post(
@@ -535,7 +524,6 @@ async def telegram_webhook(
     # Send immediate acknowledgement
     if token and chat_id:
         try:
-            import httpx
             async with httpx.AsyncClient(timeout=5) as client:
                 await client.post(
                     f"https://api.telegram.org/bot{token}/sendMessage",
@@ -550,7 +538,6 @@ async def telegram_webhook(
         new_pending = await _has_pending_reply(chat_id)
         if not new_pending and token and chat_id:
             try:
-                import httpx
                 reply_body = result[:1000] + ("..." if len(result) > 1000 else "")
                 async with httpx.AsyncClient(timeout=10) as client:
                     await client.post(

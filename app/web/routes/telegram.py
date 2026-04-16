@@ -375,12 +375,93 @@ async def telegram_webhook(
 
     message = body.get("message", {})
     chat_id = str(message.get("chat", {}).get("id", ""))
-    text = message.get("text", "").strip()
+    text = (message.get("text") or message.get("caption") or "").strip()
 
-    if not chat_id or not text:
+    if not chat_id:
         return {"ok": True}
 
     token = app_config.TELEGRAM_BOT_TOKEN
+
+    # ── File handling ─────────────────────────────────────────────────────
+    has_file = any(k in message for k in ("document", "photo", "audio", "voice", "video"))
+
+    if has_file:
+        result = await _download_telegram_file(token, message)
+        if result is None:
+            if token:
+                try:
+                    async with httpx.AsyncClient(timeout=5) as client:
+                        await client.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={"chat_id": chat_id, "text": "Sorry, I couldn't download that file. Please try again."},
+                        )
+                except Exception:
+                    pass
+            return {"ok": True}
+
+        filename, file_path = result
+
+        # Get intent: caption > stored pending intent > generic fallback
+        pending_file = await _get_and_clear_pending_file(chat_id)
+        if text:
+            intent = text
+            thread_id = pending_file["thread_id"] if pending_file else None
+        elif pending_file:
+            intent = pending_file["intent_text"]
+            thread_id = pending_file["thread_id"]
+        else:
+            intent = None
+            thread_id = None
+
+        if intent:
+            prompt = f"{intent}\n\nFile saved to: workspace/telegram_uploads/{filename}"
+        else:
+            prompt = f"User sent a file via Telegram. It has been saved to: workspace/telegram_uploads/{filename}. What should I do with it?"
+
+        # Ensure we have an active thread
+        if not thread_id:
+            async with AsyncSessionLocal() as db:
+                new_thread = Thread(title=f"Telegram file: {filename}", model="gpt-4o")
+                db.add(new_thread)
+                await db.commit()
+                await db.refresh(new_thread)
+                thread_id = new_thread.id
+
+        if token:
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": "Got it, working on it..."},
+                    )
+            except Exception:
+                pass
+
+        async def _run_file_task(tid: int, p: str) -> None:
+            result_text = await _run_direct_thread(p, tid)
+            new_pending = await _has_pending_reply(chat_id)
+            if not new_pending and token:
+                try:
+                    reply_body = result_text[:1000] + ("..." if len(result_text) > 1000 else "")
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        await client.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={"chat_id": chat_id, "text": reply_body},
+                        )
+                        await client.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={"chat_id": chat_id, "text": "Anything else?"},
+                        )
+                except Exception as exc:
+                    logger.warning("telegram file task: failed to send result: %s", exc)
+                await _register_pending_reply(chat_id, tid, conversation_id=None)
+
+        asyncio.create_task(_run_file_task(thread_id, prompt))
+        return {"ok": True}
+
+    # ── Text-only messages ────────────────────────────────────────────────
+    if not text:
+        return {"ok": True}
 
     # ── /newthread [optional title] ────────────────────────────────────────
     if text.lower().startswith("/newthread"):
@@ -455,6 +536,20 @@ async def telegram_webhook(
         pending = result.scalars().first()
 
         if pending is None:
+            # No automation pending — check if user is hinting a file is coming
+            pending_file_row = await _get_and_clear_pending_file(chat_id)
+            if _text_hints_file(text):
+                active_thread_id = pending_file_row.get("thread_id") if pending_file_row else None
+                await _store_pending_file(chat_id, text, thread_id=active_thread_id)
+                if token:
+                    try:
+                        async with httpx.AsyncClient(timeout=5) as client:
+                            await client.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": "Got it, send the file when ready."},
+                            )
+                    except Exception:
+                        pass
             return {"ok": True}
 
         conversation_id = pending.conversation_id

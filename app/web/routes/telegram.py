@@ -498,9 +498,13 @@ async def telegram_webhook(
     if not text:
         return {"ok": True}
 
+    # Normalise slash commands: strip spaces after the slash so
+    # "/ remember foo" is treated the same as "/remember foo"
+    _text_norm = ("/" + text.lstrip("/").strip()) if text.startswith("/") else text
+
     # ── /newthread [optional title] ────────────────────────────────────────
-    if text.lower().startswith("/newthread"):
-        title = text[len("/newthread"):].strip() or "New Chat"
+    if _text_norm.lower().startswith("/newthread"):
+        title = _text_norm[len("/newthread"):].strip() or "New Chat"
         async with AsyncSessionLocal() as db:
             thread = Thread(title=title, model="gpt-4o-mini")
             db.add(thread)
@@ -526,7 +530,7 @@ async def telegram_webhook(
         return {"ok": True}
 
     # ── /thread — show active thread ──────────────────────────────────────
-    if text.lower() == "/thread":
+    if _text_norm.lower() == "/thread":
         now_check = datetime.now(timezone.utc)
         async with AsyncSessionLocal() as db:
             result = await db.execute(
@@ -558,10 +562,10 @@ async def telegram_webhook(
         return {"ok": True}
 
     # ── /model [model_name] — change model for active thread ─────────────────
-    if text.lower().startswith("/model"):
+    if _text_norm.lower().startswith("/model"):
         from app.web.routes.chat import AVAILABLE_MODELS as _VALID_MODELS_LIST
         _VALID_MODELS = set(_VALID_MODELS_LIST)
-        requested = text[len("/model"):].strip().lower()
+        requested = _text_norm[len("/model"):].strip().lower()
 
         if not requested:
             # Show current model
@@ -615,8 +619,9 @@ async def telegram_webhook(
         return {"ok": True}
 
     # ── /remember <text> — save a memory entry ───────────────────────────────
-    if text.lower().startswith("/remember"):
-        fact = text[len("/remember"):].strip()
+    if _text_norm.lower().startswith("/remember") or _text_norm.lower().startswith("/memory "):
+        _cmd = "/remember" if _text_norm.lower().startswith("/remember") else "/memory"
+        fact = _text_norm[len(_cmd):].strip()
         if not fact:
             reply = "Usage: /remember <fact>\nExample: /remember My birthday is Jan 1"
         else:
@@ -640,9 +645,9 @@ async def telegram_webhook(
         return {"ok": True}
 
     # ── /ls [folder] — list workspace files ──────────────────────────────────
-    if text.lower().startswith("/ls"):
+    if _text_norm.lower().startswith("/ls"):
         import app.config as _cfg
-        folder = text[len("/ls"):].strip() or "."
+        folder = _text_norm[len("/ls"):].strip() or "."
         workspace = _cfg.WORKSPACE_DIR
         target = (workspace / folder).resolve()
         # Safety: must stay inside workspace

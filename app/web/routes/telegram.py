@@ -312,7 +312,7 @@ async def _run_continuation(user_reply: str, conversation_id: int) -> str:
         "configurable": {
             "thread_id": lg_thread_id,       # same thread — LLM sees full history
             "ws_thread_id": db_thread_id or 0,
-            "model": "gpt-4o",
+            "model": "gpt-4o-mini",
             "automation_run": True,
         }
     }
@@ -456,7 +456,7 @@ async def telegram_webhook(
 
         if not thread_id:
             async with AsyncSessionLocal() as db:
-                new_thread = Thread(title=f"Telegram file: {filename}", model="gpt-4o")
+                new_thread = Thread(title=f"Telegram file: {filename}", model="gpt-4o-mini")
                 db.add(new_thread)
                 await db.commit()
                 await db.refresh(new_thread)
@@ -502,7 +502,7 @@ async def telegram_webhook(
     if text.lower().startswith("/newthread"):
         title = text[len("/newthread"):].strip() or "New Chat"
         async with AsyncSessionLocal() as db:
-            thread = Thread(title=title, model="gpt-4o")
+            thread = Thread(title=title, model="gpt-4o-mini")
             db.add(thread)
             await db.commit()
             await db.refresh(thread)
@@ -557,6 +557,65 @@ async def telegram_webhook(
                 pass
         return {"ok": True}
 
+    # ── /model [model_name] — change model for active thread ─────────────────
+    if text.lower().startswith("/model"):
+        _VALID_MODELS = {
+            "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4",
+            "o1", "o1-mini", "o3-mini",
+        }
+        requested = text[len("/model"):].strip().lower()
+
+        if not requested:
+            # Show current model
+            now_check2 = datetime.now(timezone.utc)
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(TelegramPendingReply)
+                    .where(TelegramPendingReply.chat_id == chat_id)
+                    .where(TelegramPendingReply.expires_at > now_check2)
+                )
+                active = result.scalars().first()
+            if active:
+                async with AsyncSessionLocal() as db:
+                    thread = await db.get(Thread, active.thread_id)
+                reply = f"Current model: {thread.model if thread else 'unknown'}\nAvailable: {', '.join(sorted(_VALID_MODELS))}"
+            else:
+                reply = "No active thread. Send /newthread first."
+        elif requested not in _VALID_MODELS:
+            reply = f"Unknown model '{requested}'.\nAvailable: {', '.join(sorted(_VALID_MODELS))}"
+        else:
+            # Update the active thread's model
+            now_check2 = datetime.now(timezone.utc)
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(TelegramPendingReply)
+                    .where(TelegramPendingReply.chat_id == chat_id)
+                    .where(TelegramPendingReply.expires_at > now_check2)
+                )
+                active = result.scalars().first()
+            if not active:
+                reply = "No active thread. Send /newthread first."
+            else:
+                async with AsyncSessionLocal() as db:
+                    thread = await db.get(Thread, active.thread_id)
+                    if thread:
+                        thread.model = requested
+                        await db.commit()
+                        reply = f"Model changed to {requested} for this thread."
+                    else:
+                        reply = "Active thread not found."
+
+        if token:
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": reply},
+                    )
+            except Exception:
+                pass
+        return {"ok": True}
+
     # Check end-of-conversation BEFORE looking up pending — if the user says
     # "no"/"done"/etc., we close the loop without running the supervisor.
 
@@ -591,7 +650,7 @@ async def telegram_webhook(
                 redirect_thread_id = pending_file_row.get("thread_id")
                 if not redirect_thread_id:
                     async with AsyncSessionLocal() as db:
-                        new_thread = Thread(title=text[:60], model="gpt-4o")
+                        new_thread = Thread(title=text[:60], model="gpt-4o-mini")
                         db.add(new_thread)
                         await db.commit()
                         await db.refresh(new_thread)

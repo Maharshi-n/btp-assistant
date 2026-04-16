@@ -146,6 +146,28 @@ async def _get_and_clear_pending_file(chat_id: str) -> dict | None:
         return data
 
 
+def _smart_truncate(text: str, limit: int = 3800) -> str:
+    """Truncate text at a sentence/line boundary near `limit` chars.
+
+    Stays well under Telegram's 4096-char message limit.
+    If the text is short enough, returns it unchanged.
+    """
+    if len(text) <= limit:
+        return text
+    # Try to cut at last newline before limit
+    cut = text.rfind("\n", 0, limit)
+    if cut < limit // 2:
+        # No good newline — cut at last sentence boundary
+        for sep in (". ", "! ", "? "):
+            pos = text.rfind(sep, 0, limit)
+            if pos > limit // 2:
+                cut = pos + 1
+                break
+        else:
+            cut = limit
+    return text[:cut].rstrip() + "\n\n_(truncated — see full reply in RAION)_"
+
+
 router = APIRouter()
 
 # Phrases that mean the user wants to end the conversation
@@ -197,21 +219,27 @@ async def _has_pending_reply(chat_id: str) -> bool:
         return result.scalars().first() is not None
 
 
-async def _run_direct_thread(user_reply: str, db_thread_id: int) -> str:
+async def _run_direct_thread(user_reply: str, db_thread_id: int, file_context: str | None = None) -> str:
     """Resume a direct chat LangGraph thread (no AutomationConversation) with the user's reply.
 
     Used when telegram_ask was called from a plain chat thread rather than an automation.
     The LangGraph thread key is str(db_thread_id) — same as the chat route uses.
+
+    file_context: if set, appended as a silent system note (not shown to user) so the agent
+    knows the file path without polluting the visible conversation.
     """
-    from langchain_core.messages import AIMessage, HumanMessage
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     from app.agents.supervisor import get_graph
 
     lg_thread_id = str(db_thread_id)
 
-    # Persist user reply into the DB thread so it shows in the UI
+    # Tag the message as coming from Telegram — silent context for the agent
+    tagged_reply = f"[via Telegram] {user_reply}"
+
+    # Persist user reply into the DB thread so it shows in the UI (without the tag)
     async with AsyncSessionLocal() as db:
         thread = await db.get(Thread, db_thread_id)
-        model = thread.model if thread else "gpt-4o"
+        model = thread.model if thread else "gpt-4o-mini"
         msg = Message(
             thread_id=db_thread_id,
             role="user",
@@ -231,7 +259,10 @@ async def _run_direct_thread(user_reply: str, db_thread_id: int) -> str:
         }
     }
 
-    lc_messages = [HumanMessage(content=user_reply)]
+    lc_messages: list = [HumanMessage(content=tagged_reply)]
+    # Inject file path as a system note so it doesn't appear in the user message
+    if file_context:
+        lc_messages.insert(0, SystemMessage(content=file_context))
     full_content: list[str] = []
     last_ai_content: str = ""
 
@@ -417,20 +448,13 @@ async def telegram_webhook(
         else:
             intent = None
 
-        if intent:
-            prompt = (
-                f"{intent}\n\n"
-                f"Context: the file has already been downloaded and saved locally to "
-                f"workspace/telegram_uploads/{filename}. "
-                f"Use filesystem tools (copy_file, move_file, list_dir, etc.) to act on it — "
-                f"do NOT upload to Google Drive or read binary content unless explicitly asked."
-            )
-        else:
-            prompt = (
-                f"User sent a file via Telegram. It has been saved locally to "
-                f"workspace/telegram_uploads/{filename}. "
-                f"Ask the user what they'd like to do with it."
-            )
+        file_context = (
+            f"[File context] The user sent a file via Telegram. "
+            f"It has been saved to workspace/telegram_uploads/{filename}. "
+            f"Use filesystem tools (copy_file, move_file, list_dir, etc.) to act on it. "
+            f"Do NOT upload to Google Drive or read binary content unless explicitly asked."
+        )
+        prompt = intent if intent else "I just sent you a file — what can you do with it?"
 
         # Reuse active thread from TelegramPendingReply (and clear it so _has_pending_reply
         # returns False after the agent runs), then pending file's thread, then create new.
@@ -456,7 +480,8 @@ async def telegram_webhook(
 
         if not thread_id:
             async with AsyncSessionLocal() as db:
-                new_thread = Thread(title=f"Telegram file: {filename}", model="gpt-4o-mini")
+                thread_title = (intent or filename)[:60]
+                new_thread = Thread(title=thread_title, model="gpt-4o-mini")
                 db.add(new_thread)
                 await db.commit()
                 await db.refresh(new_thread)
@@ -472,26 +497,25 @@ async def telegram_webhook(
             except Exception:
                 pass
 
-        async def _run_file_task(tid: int, p: str) -> None:
-            result_text = await _run_direct_thread(p, tid)
+        async def _run_file_task(tid: int, p: str, fc: str) -> None:
+            result_text = await _run_direct_thread(p, tid, file_context=fc)
             new_pending = await _has_pending_reply(chat_id)
             if not new_pending and token:
                 try:
-                    reply_body = result_text[:1000] + ("..." if len(result_text) > 1000 else "")
                     async with httpx.AsyncClient(timeout=10) as client:
                         await client.post(
                             f"https://api.telegram.org/bot{token}/sendMessage",
-                            json={"chat_id": chat_id, "text": reply_body},
+                            json={"chat_id": chat_id, "text": _smart_truncate(result_text)},
                         )
                         await client.post(
                             f"https://api.telegram.org/bot{token}/sendMessage",
-                            json={"chat_id": chat_id, "text": "Anything else?"},
+                            json={"chat_id": chat_id, "text": "💬"},
                         )
                 except Exception as exc:
                     logger.warning("telegram file task: failed to send result: %s", exc)
             await _register_pending_reply(chat_id, tid, conversation_id=None)
 
-        asyncio.create_task(_run_file_task(thread_id, prompt))
+        asyncio.create_task(_run_file_task(thread_id, prompt, file_context))
         return {"ok": True}
 
     # ── Text-only messages ────────────────────────────────────────────────
@@ -740,15 +764,14 @@ async def telegram_webhook(
                     new_pending = await _has_pending_reply(chat_id)
                     if not new_pending and token:
                         try:
-                            reply_body = result_text[:1000] + ("..." if len(result_text) > 1000 else "")
                             async with httpx.AsyncClient(timeout=10) as client:
                                 await client.post(
                                     f"https://api.telegram.org/bot{token}/sendMessage",
-                                    json={"chat_id": chat_id, "text": reply_body},
+                                    json={"chat_id": chat_id, "text": _smart_truncate(result_text)},
                                 )
                                 await client.post(
                                     f"https://api.telegram.org/bot{token}/sendMessage",
-                                    json={"chat_id": chat_id, "text": "Anything else?"},
+                                    json={"chat_id": chat_id, "text": "💬"},
                                 )
                         except Exception as exc:
                             logger.warning("telegram webhook: redirect task failed to send result: %s", exc)
@@ -802,16 +825,14 @@ async def telegram_webhook(
             new_pending = await _has_pending_reply(chat_id)
             if not new_pending and token and chat_id:
                 try:
-                    reply_body = result_text[:1000] + ("..." if len(result_text) > 1000 else "")
                     async with httpx.AsyncClient(timeout=10) as client:
                         await client.post(
                             f"https://api.telegram.org/bot{token}/sendMessage",
-                            json={"chat_id": chat_id, "text": reply_body},
+                            json={"chat_id": chat_id, "text": _smart_truncate(result_text)},
                         )
-                        # Ask "Anything else?" and keep the loop open
                         await client.post(
                             f"https://api.telegram.org/bot{token}/sendMessage",
-                            json={"chat_id": chat_id, "text": "Anything else?"},
+                            json={"chat_id": chat_id, "text": "💬"},
                         )
                 except Exception as exc:
                     logger.warning("telegram webhook: failed to send result: %s", exc)
@@ -838,15 +859,14 @@ async def telegram_webhook(
         new_pending = await _has_pending_reply(chat_id)
         if not new_pending and token and chat_id:
             try:
-                reply_body = result[:1000] + ("..." if len(result) > 1000 else "")
                 async with httpx.AsyncClient(timeout=10) as client:
                     await client.post(
                         f"https://api.telegram.org/bot{token}/sendMessage",
-                        json={"chat_id": chat_id, "text": reply_body},
+                        json={"chat_id": chat_id, "text": _smart_truncate(result)},
                     )
                     await client.post(
                         f"https://api.telegram.org/bot{token}/sendMessage",
-                        json={"chat_id": chat_id, "text": "Anything else?"},
+                        json={"chat_id": chat_id, "text": "💬"},
                     )
             except Exception as exc:
                 logger.warning("telegram webhook: failed to send result: %s", exc)

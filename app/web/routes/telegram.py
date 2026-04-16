@@ -559,10 +559,8 @@ async def telegram_webhook(
 
     # ── /model [model_name] — change model for active thread ─────────────────
     if text.lower().startswith("/model"):
-        _VALID_MODELS = {
-            "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4",
-            "o1", "o1-mini", "o3-mini",
-        }
+        from app.web.routes.chat import AVAILABLE_MODELS as _VALID_MODELS_LIST
+        _VALID_MODELS = set(_VALID_MODELS_LIST)
         requested = text[len("/model"):].strip().lower()
 
         if not requested:

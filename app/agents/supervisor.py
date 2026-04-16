@@ -38,7 +38,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, TypedDict
 
-import aiosqlite
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -49,18 +48,22 @@ from langchain_core.messages import (
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg import AsyncConnection
+from psycopg.rows import dict_row
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command, interrupt
 
 import app.config as app_config
 from app.permissions.policy import get_decision, human_readable_prompt
-from app.tools.filesystem import delete_file, list_dir, read_file, write_file
+from app.tools.filesystem import copy_file, create_folder, delete_file, list_dir, move_file, read_file, write_file
 from app.tools.google_tools import GOOGLE_TOOLS
 from app.tools.shell import run_shell_command
 from app.tools.web import web_fetch, web_search
-from app.tools.telegram_tools import telegram_ask, telegram_send
+from app.tools.telegram_tools import save_draft, schedule_message, telegram_ask, telegram_send, telegram_send_file
+from app.tools.skills import read_skill
+from app.mcp.loader import load_active_mcp_tools
 
 # ---------------------------------------------------------------------------
 # Bounds (hardcoded per plan)
@@ -125,6 +128,9 @@ class AgentState(TypedDict):
 WORKER_TOOLS = [
     read_file,
     write_file,
+    copy_file,
+    move_file,
+    create_folder,
     list_dir,
     delete_file,
     run_shell_command,
@@ -133,6 +139,10 @@ WORKER_TOOLS = [
     *GOOGLE_TOOLS,
     telegram_send,
     telegram_ask,
+    save_draft,
+    schedule_message,
+    telegram_send_file,
+    read_skill,
 ]
 
 _TOOL_MAP: dict[str, Any] = {t.name: t for t in WORKER_TOOLS}
@@ -141,6 +151,96 @@ _TOOL_MAP: dict[str, Any] = {t.name: t for t in WORKER_TOOLS}
 # ---------------------------------------------------------------------------
 # System prompts
 # ---------------------------------------------------------------------------
+
+_memory_cache: dict[str, Any] = {"text": "", "loaded_at": 0.0, "ttl": 10.0}
+_skills_cache: dict[str, Any] = {"text": "", "loaded_at": 0.0, "ttl": 10.0}
+
+
+def invalidate_memory_cache() -> None:
+    """Force the next _load_user_memories() call to re-read from DB."""
+    _memory_cache["loaded_at"] = 0.0
+
+
+def invalidate_skills_cache() -> None:
+    """Force the next _load_skills_index() call to re-read from DB."""
+    _skills_cache["loaded_at"] = 0.0
+
+
+async def _load_skills_index() -> str:
+    """Return a compact index of enabled skills for injection into the system prompt.
+
+    Only names + trigger descriptions are included here (1 line each).
+    The full file content is loaded on demand via read_skill().
+    10-second TTL cache — same pattern as memories.
+    """
+    now = time.monotonic()
+    if now - _skills_cache["loaded_at"] < _skills_cache["ttl"]:
+        return _skills_cache["text"]
+
+    try:
+        from sqlalchemy import select as sa_select
+        from app.db.engine import AsyncSessionLocal
+        from app.db.models import Skill
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                sa_select(Skill)
+                .where(Skill.enabled == True)  # noqa: E712
+                .order_by(Skill.name.asc())
+            )
+            skills = result.scalars().all()
+
+        if not skills:
+            text = ""
+        else:
+            lines = "\n".join(f'- "{s.name}": {s.trigger_description}' for s in skills)
+            text = (
+                "\n\n━━━ SKILLS ━━━\n"
+                "You have access to the following skill files via read_skill(name).\n"
+                "Call read_skill() with the exact name when a skill is relevant:\n"
+                + lines
+            )
+
+        _skills_cache["text"] = text
+        _skills_cache["loaded_at"] = now
+        return text
+    except Exception:
+        return _skills_cache.get("text", "")
+
+
+async def _load_user_memories() -> str:
+    """Fetch all user memory entries from the DB and format them for injection.
+
+    Results are cached for 10 seconds so repeated supervisor loop iterations
+    don't hit the DB on every LLM call.
+    """
+    now = time.monotonic()
+    if now - _memory_cache["loaded_at"] < _memory_cache["ttl"]:
+        return _memory_cache["text"]
+
+    try:
+        from sqlalchemy import select as sa_select
+        from app.db.engine import AsyncSessionLocal
+        from app.db.models import UserMemory
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                sa_select(UserMemory).order_by(UserMemory.created_at.asc())
+            )
+            memories = result.scalars().all()
+
+        if not memories:
+            text = ""
+        else:
+            lines = "\n".join(f"- {m.content}" for m in memories)
+            text = f"\n\n━━━ USER MEMORY ━━━\nThe user has stored the following personal context. Use it to personalize your responses:\n{lines}"
+
+        _memory_cache["text"] = text
+        _memory_cache["loaded_at"] = now
+        return text
+    except Exception:
+        return _memory_cache.get("text", "")
+
 
 def _supervisor_system_prompt() -> str:
     IST = timezone(timedelta(hours=5, minutes=30))
@@ -159,13 +259,15 @@ Do not say "I can help with that" — just do it.
 When a task is done, give a short, direct summary of what you did.
 
 ━━━ TOOLS AVAILABLE ━━━
-Filesystem : read_file, write_file, list_dir, delete_file  (workspace-scoped)
+Filesystem : read_file, write_file, copy_file, move_file, create_folder, list_dir, delete_file  (workspace-scoped)
+           copy_file/move_file preserve binary content — use these for images, PDFs, and any non-text files
 Shell      : run_shell_command  (safe allowlist only)
 Web        : web_search, web_fetch
 Gmail      : gmail_list_unread, gmail_read, gmail_search, gmail_send
 Drive      : drive_list, drive_read, drive_write, drive_download, drive_upload
 Calendar   : calendar_list_events, calendar_create_event
-Telegram   : telegram_send, telegram_ask
+Telegram   : telegram_send, telegram_ask, save_draft, schedule_message, telegram_send_file
+Skills     : read_skill  (call when a skill from the SKILLS section is relevant)
 
 ━━━ DRIVE RULES ━━━
 - To download a file: ALWAYS call drive_list first to get the real file_id. Never guess it.
@@ -206,6 +308,14 @@ is provided at the top of the message. Read it carefully and act on it directly.
 For email triggers: the full email is provided — read it, do not call gmail_read again.
 For file triggers: the file path is provided — call read_file on that exact path.
 For cron triggers: execute the task immediately, do not wait for confirmation.
+
+CRITICAL — TOOL CALLS VS NARRATION:
+If your instructions say to call telegram_ask or any other tool — INVOKE IT as a tool call.
+NEVER narrate what you "will do" or "have done" instead of doing it.
+WRONG: "I'll send you the draft via Telegram now."
+WRONG: "I've sent the draft for your approval."
+RIGHT: [actually invoke telegram_ask tool with the draft text in the question argument]
+This rule is absolute. Every tool mentioned in your instructions must be called, not described.
 
 ━━━ MULTI-AGENT ORCHESTRATION ━━━
 Use spawn_workers ONLY when a task has genuinely independent parallel sub-tasks
@@ -274,11 +384,13 @@ async def _worker_node(state: AgentState, config: RunnableConfig) -> dict:
     if err:
         return {"messages": [AIMessage(content=err)]}
 
-    # Filter tools
+    # Filter tools (include MCP tools in worker pool)
+    mcp_tools = await load_active_mcp_tools()
+    all_worker_tools = WORKER_TOOLS + mcp_tools
     if tools_allowed:
-        active_tools = [t for t in WORKER_TOOLS if t.name in tools_allowed]
+        active_tools = [t for t in all_worker_tools if t.name in tools_allowed]
     else:
-        active_tools = WORKER_TOOLS
+        active_tools = all_worker_tools
 
     llm = ChatOpenAI(
         model=model_name,
@@ -287,7 +399,15 @@ async def _worker_node(state: AgentState, config: RunnableConfig) -> dict:
     )
     llm_with_tools = llm.bind_tools(active_tools)
 
-    response: BaseMessage = await llm_with_tools.ainvoke(state["messages"])
+    # Cap worker context to last 20 messages
+    worker_messages = list(state["messages"])
+    _WINDOW = 20
+    if len(worker_messages) > _WINDOW:
+        non_sys = [m for m in worker_messages if not isinstance(m, SystemMessage)]
+        sys_msgs = [m for m in worker_messages if isinstance(m, SystemMessage)]
+        worker_messages = sys_msgs + non_sys[-_WINDOW:]
+
+    response: BaseMessage = await llm_with_tools.ainvoke(worker_messages)
 
     # Emit WS event for worker node activity
     try:
@@ -397,8 +517,12 @@ async def _worker_tools_node(state: AgentState, config: RunnableConfig) -> dict:
                 request_id=None,
             )
 
-        # Execute
+        # Execute — fall back to MCP tools if not in static map
         t = _TOOL_MAP.get(tool_name)
+        if t is None:
+            mcp_tools = await load_active_mcp_tools()
+            mcp_map = {mt.name: mt for mt in mcp_tools}
+            t = mcp_map.get(tool_name)
         if t is None:
             tool_messages.append(
                 ToolMessage(tool_call_id=tool_call_id, content=f"Unknown tool: {tool_name}")
@@ -477,6 +601,9 @@ def spawn_workers_tool(tasks: list[dict]) -> str:
 SUPERVISOR_TOOLS = [
     read_file,
     write_file,
+    copy_file,
+    move_file,
+    create_folder,
     list_dir,
     delete_file,
     run_shell_command,
@@ -485,6 +612,10 @@ SUPERVISOR_TOOLS = [
     *GOOGLE_TOOLS,
     telegram_send,
     telegram_ask,
+    save_draft,
+    schedule_message,
+    telegram_send_file,
+    read_skill,
     spawn_workers_tool,
 ]
 
@@ -551,14 +682,25 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
         api_key=app_config.OPENAI_API_KEY,
         streaming=True,
     )
-    llm_with_tools = llm.bind_tools(SUPERVISOR_TOOLS)
 
+    mcp_tools = await load_active_mcp_tools()
+    all_supervisor_tools = SUPERVISOR_TOOLS + mcp_tools
+    llm_with_tools = llm.bind_tools(all_supervisor_tools)
+
+    memories_block = await _load_user_memories()
+    skills_block = await _load_skills_index()
     messages = list(state["messages"])
-    system = SystemMessage(content=_supervisor_system_prompt())
-    if messages and isinstance(messages[0], SystemMessage):
-        messages[0] = system
-    else:
-        messages.insert(0, system)
+
+    # Sliding window: keep system message + last 20 messages to cap token usage.
+    # This covers ~10 user/assistant turns which is enough for any single task.
+    _WINDOW = 20
+    if len(messages) > _WINDOW:
+        # Strip any leading SystemMessage before windowing
+        non_system = [m for m in messages if not isinstance(m, SystemMessage)]
+        messages = non_system[-_WINDOW:]
+
+    system = SystemMessage(content=_supervisor_system_prompt() + memories_block + skills_block)
+    messages.insert(0, system)
 
     response: BaseMessage = await llm_with_tools.ainvoke(messages)
     return {"messages": [response], "run_context": ctx}
@@ -640,6 +782,11 @@ async def policy_tools_node(state: AgentState, config: RunnableConfig) -> dict:
 
         t = _SUPERVISOR_TOOL_MAP.get(tool_name)
         if t is None:
+            # Fall back to MCP tools
+            mcp_tools = await load_active_mcp_tools()
+            mcp_map = {mt.name: mt for mt in mcp_tools}
+            t = mcp_map.get(tool_name)
+        if t is None:
             tool_messages.append(
                 ToolMessage(tool_call_id=tool_call_id, content=f"Unknown tool: {tool_name}")
             )
@@ -650,7 +797,7 @@ async def policy_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             tool_messages.append(ToolMessage(tool_call_id=tool_call_id, content=str(result)))
         except Exception as exc:
             tool_messages.append(
-                ToolMessage(tool_call_id=tool_call_id, content=f"Tool error: {exc}")
+                ToolMessage(tool_call_id=tool_call_id, content=f"MCP tool error ({tool_name}): {exc}")
             )
 
     return {"messages": tool_messages, "run_context": ctx}
@@ -848,7 +995,7 @@ async def _log_audit(
 # Main supervisor graph builder
 # ---------------------------------------------------------------------------
 
-def _build_graph(checkpointer: AsyncSqliteSaver) -> Any:
+def _build_graph(checkpointer: AsyncPostgresSaver) -> Any:
     builder: StateGraph = StateGraph(AgentState)
     builder.add_node("supervisor", supervisor_node)
     builder.add_node("tools", policy_tools_node)
@@ -867,22 +1014,11 @@ def _build_graph(checkpointer: AsyncSqliteSaver) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# DB path helper
-# ---------------------------------------------------------------------------
-
-def _resolve_db_path() -> str:
-    url = app_config.DATABASE_URL
-    if ":///" in url:
-        return url.split("///", 1)[-1]
-    return "app.db"
-
-
-# ---------------------------------------------------------------------------
 # Module-level singletons
 # ---------------------------------------------------------------------------
 
-_conn: aiosqlite.Connection | None = None
-_checkpointer: AsyncSqliteSaver | None = None
+_pg_conn: AsyncConnection | None = None
+_checkpointer: AsyncPostgresSaver | None = None
 _graph: Any | None = None
 
 
@@ -892,25 +1028,34 @@ def get_graph() -> Any:
     return _graph
 
 
+def _pg_conn_string() -> str:
+    """Convert SQLAlchemy asyncpg URL to a plain psycopg connection string."""
+    url = app_config.DATABASE_URL
+    # postgresql+asyncpg://user:pass@host:port/db → postgresql://user:pass@host:port/db
+    return url.replace("postgresql+asyncpg://", "postgresql://")
+
+
 async def init_supervisor() -> None:
-    global _conn, _checkpointer, _graph, _worker_graph
-    db_path = _resolve_db_path()
-    _conn = await aiosqlite.connect(db_path)
-    _checkpointer = AsyncSqliteSaver(_conn)
+    global _pg_conn, _checkpointer, _graph, _worker_graph
+    conn_string = _pg_conn_string()
+    # Open a persistent connection for the checkpointer — lives for the app lifetime
+    _pg_conn = await AsyncConnection.connect(
+        conn_string, autocommit=True, prepare_threshold=0, row_factory=dict_row
+    )
+    _checkpointer = AsyncPostgresSaver(conn=_pg_conn)
     await _checkpointer.setup()
     _graph = _build_graph(_checkpointer)
-    # Pre-build the worker graph too
     _worker_graph = _build_worker_graph()
 
 
 async def shutdown_supervisor() -> None:
-    global _conn, _checkpointer, _graph, _worker_graph
+    global _pg_conn, _checkpointer, _graph, _worker_graph
     _graph = None
-    _checkpointer = None
     _worker_graph = None
-    if _conn is not None:
+    _checkpointer = None
+    if _pg_conn is not None:
         try:
-            await _conn.close()
+            await _pg_conn.close()
         except Exception:
             pass
-        _conn = None
+        _pg_conn = None

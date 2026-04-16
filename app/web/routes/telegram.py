@@ -410,20 +410,40 @@ async def telegram_webhook(
                     chat_id,
                 )
             intent = text
-            thread_id = pending_file["thread_id"] if pending_file else None
         elif pending_file:
             intent = pending_file["intent_text"]
-            thread_id = pending_file["thread_id"]
         else:
             intent = None
-            thread_id = None
 
         if intent:
-            prompt = f"{intent}\n\nFile saved to: workspace/telegram_uploads/{filename}"
+            prompt = (
+                f"{intent}\n\n"
+                f"The file has been saved to workspace/telegram_uploads/{filename} — "
+                f"use that path directly with filesystem tools (do not try to read binary files)."
+            )
         else:
-            prompt = f"User sent a file via Telegram. It has been saved to: workspace/telegram_uploads/{filename}. What should I do with it?"
+            prompt = (
+                f"User sent a file via Telegram. It has been saved to "
+                f"workspace/telegram_uploads/{filename}. "
+                f"Use that path with filesystem tools. What should I do with it?"
+            )
 
-        # Ensure we have an active thread
+        # Reuse active thread from TelegramPendingReply, then pending file, then create new
+        thread_id: int | None = None
+        now_file = datetime.now(timezone.utc)
+        async with AsyncSessionLocal() as db:
+            tpr_result = await db.execute(
+                select(TelegramPendingReply)
+                .where(TelegramPendingReply.chat_id == chat_id)
+                .where(TelegramPendingReply.expires_at > now_file)
+            )
+            active_tpr = tpr_result.scalars().first()
+            if active_tpr:
+                thread_id = active_tpr.thread_id
+
+        if not thread_id and pending_file:
+            thread_id = pending_file.get("thread_id")
+
         if not thread_id:
             async with AsyncSessionLocal() as db:
                 new_thread = Thread(title=f"Telegram file: {filename}", model="gpt-4o")
@@ -459,7 +479,7 @@ async def telegram_webhook(
                         )
                 except Exception as exc:
                     logger.warning("telegram file task: failed to send result: %s", exc)
-                await _register_pending_reply(chat_id, tid, conversation_id=None)
+            await _register_pending_reply(chat_id, tid, conversation_id=None)
 
         asyncio.create_task(_run_file_task(thread_id, prompt))
         return {"ok": True}

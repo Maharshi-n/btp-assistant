@@ -846,6 +846,18 @@ async def telegram_webhook(
             "Send a file anytime — I'll ask what to do with it.\n"
             "Send multiple files then type 'done' to process them all together."
         )
+        # Append enabled custom commands
+        async with AsyncSessionLocal() as db:
+            from app.db.models import TelegramCommand as _TGCmdHelp
+            _help_result = await db.execute(
+                select(_TGCmdHelp)
+                .where(_TGCmdHelp.enabled == True)  # noqa: E712
+                .order_by(_TGCmdHelp.name)
+            )
+            _custom_cmds = _help_result.scalars().all()
+        if _custom_cmds:
+            reply += "\n\nCustom commands:\n"
+            reply += "\n".join(f"/{c.name} — {c.description}" for c in _custom_cmds)
         if token:
             try:
                 async with httpx.AsyncClient(timeout=5) as client:
@@ -942,6 +954,94 @@ async def telegram_webhook(
             except Exception:
                 pass
         return {"ok": True}
+
+    # ── Custom Telegram commands ──────────────────────────────────────────────
+    if _text_norm.startswith("/"):
+        _cmd_slug = _text_norm[1:].split()[0].lower()  # e.g. "standup" from "/standup focus"
+        async with AsyncSessionLocal() as db:
+            from app.db.models import TelegramCommand as _TGCmd
+            _cmd_result = await db.execute(
+                select(_TGCmd)
+                .where(_TGCmd.name == _cmd_slug)
+                .where(_TGCmd.enabled == True)  # noqa: E712
+            )
+            _custom_cmd = _cmd_result.scalars().first()
+
+        if _custom_cmd is not None:
+            # Block if a conversation is already in progress
+            if await _has_pending_reply(chat_id):
+                if token:
+                    try:
+                        async with httpx.AsyncClient(timeout=5) as client:
+                            await client.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": "Finish your current conversation first."},
+                            )
+                    except Exception:
+                        pass
+                return {"ok": True}
+
+            # Build prompt: preset + user extra
+            _user_extra = _text_norm[1 + len(_cmd_slug):].strip()
+            if _custom_cmd.preset_prompt and _user_extra:
+                _cmd_prompt = f"{_custom_cmd.preset_prompt}. User added: {_user_extra}"
+            elif _custom_cmd.preset_prompt:
+                _cmd_prompt = _custom_cmd.preset_prompt
+            elif _user_extra:
+                _cmd_prompt = _user_extra
+            else:
+                if token:
+                    try:
+                        async with httpx.AsyncClient(timeout=5) as client:
+                            await client.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": "Please provide a prompt or set a default one in the web UI."},
+                            )
+                    except Exception:
+                        pass
+                return {"ok": True}
+
+            # Create a fresh thread for this command
+            async with AsyncSessionLocal() as db:
+                _cmd_thread = Thread(
+                    title=f"/{_custom_cmd.name}: {_cmd_prompt[:50]}",
+                    model="gpt-4o-mini",
+                )
+                db.add(_cmd_thread)
+                await db.commit()
+                await db.refresh(_cmd_thread)
+                _cmd_thread_id = _cmd_thread.id
+
+            if token:
+                try:
+                    async with httpx.AsyncClient(timeout=5) as client:
+                        await client.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={"chat_id": chat_id, "text": "Got it, working on it..."},
+                        )
+                except Exception:
+                    pass
+
+            async def _run_custom_cmd(tid: int, prompt: str) -> None:
+                result_text = await _run_direct_thread(prompt, tid)
+                new_pending = await _has_pending_reply(chat_id)
+                if not new_pending and token:
+                    try:
+                        async with httpx.AsyncClient(timeout=10) as client:
+                            await client.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": _smart_truncate(result_text)},
+                            )
+                            await client.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": "..."},
+                            )
+                    except Exception as exc:
+                        logger.warning("telegram custom cmd: failed to send result: %s", exc)
+                await _register_pending_reply(chat_id, tid, conversation_id=None)
+
+            asyncio.create_task(_run_custom_cmd(_cmd_thread_id, _cmd_prompt))
+            return {"ok": True}
 
     # Check end-of-conversation BEFORE looking up pending — if the user says
     # "no"/"done"/etc., we close the loop without running the supervisor.

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}BTP Assistant{% endblock %}
+{% block title %}RAION{% endblock %}
 
 {% block content %}
 <div class="flex h-screen overflow-hidden" id="app">
@@ -19,7 +19,7 @@
 
     <!-- Sidebar header -->
     <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700">
-      <span class="font-semibold text-sm tracking-wide">BTP Assistant</span>
+      <span class="font-semibold text-sm tracking-wide">RAION</span>
       <button onclick="closeSidebar()" class="md:hidden text-gray-400 hover:text-white">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -57,14 +57,100 @@
       {% endfor %}
     </nav>
 
-    <!-- Sidebar footer: logout -->
-    <div class="border-t border-gray-700 px-4 py-3">
-      <form action="/logout" method="post">
-        <button type="submit"
-                class="text-xs text-gray-400 hover:text-white transition-colors">
-          Sign out
+    <!-- Sidebar footer: single "more" button with popup menu -->
+    <div class="border-t border-gray-700 px-3 py-2 relative">
+
+      <!-- Popup menu (opens upward) -->
+      <div id="nav-menu"
+           class="hidden absolute left-3 right-3 bottom-full mb-1
+                  bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden z-50">
+        <a href="/connectors"
+           class="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300
+                  hover:bg-gray-700 hover:text-white transition-colors">
+          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+          </svg>
+          Connectors
+        </a>
+        <a href="/automations"
+           class="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300
+                  hover:bg-gray-700 hover:text-white transition-colors">
+          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M13 10V3L4 14h7v7l9-11h-7z"/>
+          </svg>
+          Automations
+        </a>
+        <a href="/memory"
+           class="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300
+                  hover:bg-gray-700 hover:text-white transition-colors">
+          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+          </svg>
+          Memory
+        </a>
+        <a href="/skills"
+           class="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300
+                  hover:bg-gray-700 hover:text-white transition-colors">
+          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+          </svg>
+          Skills
+        </a>
+        <a href="/audit"
+           class="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300
+                  hover:bg-gray-700 hover:text-white transition-colors">
+          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+          </svg>
+          Audit log
+        </a>
+        <!-- Theme toggle -->
+        <button onclick="toggleTheme()"
+                class="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300
+                       hover:bg-gray-700 hover:text-white transition-colors w-full text-left">
+          <svg id="theme-icon-moon" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+          </svg>
+          <svg id="theme-icon-sun" class="w-4 h-4 shrink-0 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+          </svg>
+          <span id="theme-label">Light mode</span>
         </button>
-      </form>
+
+        <a href="/settings"
+           class="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300
+                  hover:bg-gray-700 hover:text-white transition-colors">
+          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+          </svg>
+          Settings
+        </a>
+      </div>
+
+      <!-- Trigger button -->
+      <button onclick="toggleNavMenu(event)"
+              class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm
+                     text-gray-400 hover:bg-gray-700 hover:text-white transition-colors">
+        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 6h16M4 12h16M4 18h7"/>
+        </svg>
+        <span>More</span>
+        <svg id="nav-menu-chevron" class="w-3 h-3 ml-auto transition-transform duration-200"
+             fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/>
+        </svg>
+      </button>
     </div>
   </aside>
 
@@ -95,21 +181,33 @@
         <option value="{{ m }}">{{ m }}</option>
         {% endfor %}
       </select>
+
+      <!-- Agents toggle button — hidden until agent activity starts -->
+      <button id="agents-toggle"
+              onclick="toggleAgentsDrawer()"
+              class="hidden items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs
+                     bg-white text-gray-500 border-gray-300
+                     hover:bg-gray-50 transition-colors shrink-0">
+        <span id="agents-toggle-dot" class="w-1.5 h-1.5 rounded-full bg-gray-400 inline-block"></span>
+        <span id="agents-toggle-label">Agents</span>
+      </button>
     </header>
 
-    <!-- Agents panel (collapsed by default; expands while agent is active) -->
+    <!-- Agents drawer (hidden by default, toggled by button) -->
     <div id="agents-panel"
-         class="hidden border-b bg-gray-50 px-4 py-2 shrink-0">
-      <div class="flex flex-wrap items-center gap-2 text-xs text-gray-500">
-        <span class="font-semibold text-gray-700">Agents</span>
+         class="hidden border-b bg-gray-50 px-4 py-3 shrink-0 text-xs text-gray-600">
+      <!-- Supervisor row -->
+      <div class="flex flex-wrap items-center gap-2 mb-2">
+        <span class="font-semibold text-gray-700 uppercase tracking-wide text-[10px]">Supervisor</span>
         <span id="agent-supervisor-status"
-              class="flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border text-gray-500">
-          <!-- status text injected by JS -->
-        </span>
-        <span id="agent-tool-status" class="hidden flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700">
-          <!-- tool call status injected by JS -->
-        </span>
+              class="flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border text-gray-500"></span>
+        <span id="agent-tool-status"
+              class="hidden items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700"></span>
+        <span id="agent-wall-clock"
+              class="hidden ml-auto font-mono text-gray-400 text-[10px]"></span>
       </div>
+      <!-- Worker rows (collapsible tree) -->
+      <div id="worker-rows" class="ml-3 space-y-1.5"></div>
     </div>
 
     <!-- Message pane -->
@@ -123,20 +221,49 @@
 
     <!-- Input area -->
     <div class="border-t bg-white px-4 py-3 shrink-0">
+      <!-- Skill autocomplete dropdown -->
+      <div id="skill-dropdown"
+           class="hidden mb-1 bg-white border border-gray-200 rounded-xl shadow-lg
+                  overflow-hidden max-h-56 overflow-y-auto z-50">
+      </div>
+      <!-- Attachment chip (shown when a file is selected) -->
+      <div id="attachment-chip-area" class="hidden mb-1.5 flex items-center gap-2">
+        <div id="attachment-chip"
+             class="bg-gray-700 text-gray-300 text-xs px-2 py-1 rounded-lg flex items-center gap-1">
+          <span id="attachment-chip-name" class="max-w-[200px] truncate"></span>
+          <button type="button" onclick="clearAttachment()"
+                  class="text-gray-400 hover:text-white transition-colors shrink-0">×</button>
+        </div>
+      </div>
+      <!-- Hidden file input -->
+      <input type="file" id="file-input" class="hidden" onchange="handleFileSelected(this)">
       <form id="msg-form"
             class="flex gap-2 items-end"
             onsubmit="sendMessage(event)">
         <textarea
           id="msg-input"
           rows="1"
-          placeholder="Type a message…"
+          placeholder="Type a message… (/ for skills)"
           disabled
           class="flex-1 resize-none rounded-xl border border-gray-300 px-3 py-2
                  text-sm focus:outline-none focus:ring-2 focus:ring-blue-500
                  disabled:bg-gray-100 disabled:text-gray-400
                  max-h-40 overflow-y-auto"
           onkeydown="handleKey(event)"
-          oninput="autoResize(this)"></textarea>
+          oninput="autoResize(this); handleSkillAutocomplete(this)"></textarea>
+
+        <!-- Paperclip button -->
+        <button
+          id="attach-btn"
+          type="button"
+          disabled
+          onclick="document.getElementById('file-input').click()"
+          class="shrink-0 rounded-xl border border-gray-300 text-gray-500 px-3 py-2 text-sm
+                 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed
+                 transition-colors">
+          📎
+        </button>
+
         <button
           id="send-btn"
           type="submit"
@@ -159,6 +286,10 @@
   let activeWs = null;          // WebSocket for the current thread
   let streamingBubble = null;   // DOM element currently receiving streamed tokens
   let streamingText = '';       // accumulated text for the streaming bubble
+  let activeWorkers = {};       // worker_id -> {el, toolCount}
+  let _clockStart = null;       // wall-clock start timestamp
+  let _clockInterval = null;    // setInterval handle
+  let pendingAttachment = null; // {file: File, name: string} when a file is queued
 
   // ─── Sidebar (mobile) ────────────────────────────────────────────────────
   function openSidebar() {
@@ -169,6 +300,57 @@
     document.getElementById('sidebar').classList.add('-translate-x-full');
     document.getElementById('sidebar-overlay').classList.add('hidden');
   }
+
+  // ─── Theme toggle ─────────────────────────────────────────────────────────
+  function _applyTheme(theme) {
+    const html = document.getElementById('html-root');
+    html.setAttribute('data-theme', theme);
+    const moon = document.getElementById('theme-icon-moon');
+    const sun = document.getElementById('theme-icon-sun');
+    const label = document.getElementById('theme-label');
+    if (theme === 'dark') {
+      moon && moon.classList.add('hidden');
+      sun && sun.classList.remove('hidden');
+      label && (label.textContent = 'Light mode');
+    } else {
+      moon && moon.classList.remove('hidden');
+      sun && sun.classList.add('hidden');
+      label && (label.textContent = 'Dark mode');
+    }
+  }
+
+  function toggleTheme() {
+    const current = localStorage.getItem('theme') || 'light';
+    const next = current === 'light' ? 'dark' : 'light';
+    localStorage.setItem('theme', next);
+    _applyTheme(next);
+  }
+
+  // Init theme icons on load
+  _applyTheme(localStorage.getItem('theme') || 'light');
+
+  // ─── Nav menu (More popup) ────────────────────────────────────────────────
+  function toggleNavMenu(event) {
+    event.stopPropagation();
+    const menu = document.getElementById('nav-menu');
+    const chevron = document.getElementById('nav-menu-chevron');
+    const open = !menu.classList.contains('hidden');
+    if (open) {
+      menu.classList.add('hidden');
+      chevron.classList.remove('rotate-180');
+    } else {
+      menu.classList.remove('hidden');
+      chevron.classList.add('rotate-180');
+    }
+  }
+  document.addEventListener('click', (e) => {
+    const menu = document.getElementById('nav-menu');
+    if (menu && !menu.classList.contains('hidden') && !e.target.closest('#nav-menu') && !e.target.closest('[onclick="toggleNavMenu(event)"]')) {
+      menu.classList.add('hidden');
+      const chevron = document.getElementById('nav-menu-chevron');
+      if (chevron) chevron.classList.remove('rotate-180');
+    }
+  });
 
   // ─── WebSocket management ─────────────────────────────────────────────────
   function connectWs(threadId) {
@@ -222,42 +404,182 @@
       showPermissionCard(msg.id, msg.tool, msg.prompt, msg.args);
     } else if (msg.type === 'permission_resolved') {
       removePermissionCard(msg.id);
+    } else if (msg.type === 'worker_start') {
+      addWorkerRow(msg.worker_id, msg.description);
+    } else if (msg.type === 'worker_update') {
+      updateWorkerRow(msg.worker_id, msg.status, msg.action);
+    } else if (msg.type === 'worker_tool_call') {
+      workerToolCall(msg.worker_id, msg.tool);
+    } else if (msg.type === 'worker_tool_result') {
+      workerToolResult(msg.worker_id, msg.tool);
+    } else if (msg.type === 'worker_end') {
+      workerDone(msg.worker_id);
     } else {
       console.warn('Unknown WebSocket frame type:', msg.type);
     }
   }
 
+  // ─── Agents toggle button + drawer ───────────────────────────────────────
+  let drawerOpen = false;
+
+  function toggleAgentsDrawer() {
+    const panel = document.getElementById('agents-panel');
+    drawerOpen = !drawerOpen;
+    panel.classList.toggle('hidden', !drawerOpen);
+  }
+
+  function _showToggleBtn(active) {
+    const btn = document.getElementById('agents-toggle');
+    const dot = document.getElementById('agents-toggle-dot');
+    const label = document.getElementById('agents-toggle-label');
+    btn.classList.remove('hidden');
+    btn.classList.add('flex');
+    if (active) {
+      btn.classList.remove('border-gray-300', 'text-gray-500');
+      btn.classList.add('border-blue-300', 'text-blue-600');
+      dot.className = 'w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse inline-block';
+      label.textContent = 'Agents';
+    } else {
+      btn.classList.remove('border-blue-300', 'text-blue-600');
+      btn.classList.add('border-gray-300', 'text-gray-500');
+      dot.className = 'w-1.5 h-1.5 rounded-full bg-green-500 inline-block';
+      label.textContent = 'Agents';
+    }
+  }
+
+  // ─── Wall-clock ───────────────────────────────────────────────────────────
+  function _startClock() {
+    _clockStart = Date.now();
+    const clockEl = document.getElementById('agent-wall-clock');
+    clockEl.classList.remove('hidden');
+    if (_clockInterval) clearInterval(_clockInterval);
+    _clockInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - _clockStart) / 1000);
+      const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
+      const s = (elapsed % 60).toString().padStart(2, '0');
+      clockEl.textContent = `${m}:${s}`;
+    }, 1000);
+  }
+
+  function _stopClock() {
+    if (_clockInterval) { clearInterval(_clockInterval); _clockInterval = null; }
+    const clockEl = document.getElementById('agent-wall-clock');
+    clockEl.classList.add('hidden');
+    clockEl.textContent = '';
+    _clockStart = null;
+  }
+
   // ─── Agents panel ─────────────────────────────────────────────────────────
   function showAgentStatus(node, status) {
-    const panel = document.getElementById('agents-panel');
     const statusEl = document.getElementById('agent-supervisor-status');
-    panel.classList.remove('hidden');
+    _showToggleBtn(status === 'thinking');
 
     if (status === 'thinking') {
       statusEl.className = 'flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700';
-      statusEl.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse inline-block"></span> supervisor — thinking…';
+      statusEl.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse inline-block"></span> thinking…';
+      // Start wall-clock if not already running
+      if (!_clockStart) _startClock();
     } else {
       statusEl.className = 'flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-50 border border-green-200 text-green-700';
-      statusEl.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span> supervisor — done';
+      statusEl.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span> done';
     }
   }
 
   function showToolStatus(toolName, status) {
     const toolEl = document.getElementById('agent-tool-status');
     toolEl.classList.remove('hidden');
+    toolEl.classList.add('flex');
     if (status === 'calling') {
-      toolEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse inline-block"></span> supervisor → ${toolName}…`;
+      toolEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse inline-block"></span> ${escapeHtml(toolName)}…`;
     } else {
-      toolEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block"></span> supervisor → ${toolName} → done`;
+      toolEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block"></span> ${escapeHtml(toolName)} ✓`;
     }
   }
 
   function hideAgentsPanel() {
-    // Keep the panel visible briefly so the user can see "done", then hide
+    _stopClock();
+    // After a short delay: stop pulsing, close drawer, reset
+    setTimeout(() => {
+      _showToggleBtn(false);
+      const toolEl = document.getElementById('agent-tool-status');
+      toolEl.classList.add('hidden');
+      toolEl.classList.remove('flex');
+    }, 1500);
     setTimeout(() => {
       document.getElementById('agents-panel').classList.add('hidden');
-      document.getElementById('agent-tool-status').classList.add('hidden');
-    }, 1500);
+      document.getElementById('worker-rows').innerHTML = '';
+      activeWorkers = {};
+      drawerOpen = false;
+      // Hide the toggle button entirely once everything is settled
+      const btn = document.getElementById('agents-toggle');
+      btn.classList.add('hidden');
+      btn.classList.remove('flex');
+    }, 4000);
+  }
+
+  // ─── Worker tree panel ────────────────────────────────────────────────────
+  function addWorkerRow(workerId, description) {
+    // Auto-open the drawer when workers start spawning
+    if (!drawerOpen) {
+      drawerOpen = true;
+      document.getElementById('agents-panel').classList.remove('hidden');
+    }
+    // Start clock if not running
+    if (!_clockStart) _startClock();
+
+    const rows = document.getElementById('worker-rows');
+    const shortDesc = description.length > 70
+      ? description.slice(0, 70) + '…'
+      : description;
+
+    const row = document.createElement('div');
+    row.id = `worker-${workerId}`;
+    row.className = 'flex items-center gap-2 px-2.5 py-1 rounded-lg bg-blue-50 border border-blue-200 text-blue-700 w-fit max-w-full';
+    row.innerHTML = `
+      <span class="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse inline-block worker-dot shrink-0"></span>
+      <span class="worker-action text-xs truncate max-w-[300px]" title="${escapeHtml(description)}">${escapeHtml(shortDesc)}</span>
+      <span class="worker-tool-count hidden text-[10px] text-blue-400 shrink-0 font-mono"></span>`;
+    rows.appendChild(row);
+    activeWorkers[workerId] = { el: row, toolCount: 0 };
+  }
+
+  function updateWorkerRow(workerId, status, action) {
+    const w = activeWorkers[workerId];
+    if (!w) return;
+    const actionEl = w.el.querySelector('.worker-action');
+    if (actionEl && action) actionEl.textContent = action;
+  }
+
+  function workerToolCall(workerId, toolName) {
+    const w = activeWorkers[workerId];
+    if (!w) return;
+    w.toolCount += 1;
+    const actionEl = w.el.querySelector('.worker-action');
+    if (actionEl) actionEl.textContent = `→ ${toolName}…`;
+    const countEl = w.el.querySelector('.worker-tool-count');
+    if (countEl) {
+      countEl.textContent = `${w.toolCount} call${w.toolCount !== 1 ? 's' : ''}`;
+      countEl.classList.remove('hidden');
+    }
+  }
+
+  function workerToolResult(workerId, toolName) {
+    const w = activeWorkers[workerId];
+    if (!w) return;
+    const actionEl = w.el.querySelector('.worker-action');
+    if (actionEl) actionEl.textContent = `→ ${toolName} ✓`;
+  }
+
+  function workerDone(workerId) {
+    const w = activeWorkers[workerId];
+    if (!w) return;
+    w.el.className = 'flex items-center gap-2 px-2.5 py-1 rounded-lg bg-green-50 border border-green-200 text-green-700 w-fit max-w-full';
+    const dot = w.el.querySelector('.worker-dot');
+    if (dot) dot.className = 'w-1.5 h-1.5 rounded-full bg-green-500 inline-block worker-dot shrink-0';
+    const actionEl = w.el.querySelector('.worker-action');
+    if (actionEl) actionEl.textContent = 'done';
+    const countEl = w.el.querySelector('.worker-tool-count');
+    if (countEl) countEl.className = 'text-[10px] text-green-600 shrink-0 font-mono';
   }
 
   // ─── Streaming bubble helpers ─────────────────────────────────────────────
@@ -273,7 +595,7 @@
     wrapper.id = 'streaming-wrapper';
 
     const bubble = document.createElement('div');
-    bubble.className = 'max-w-[80%] bg-white border border-gray-200 text-gray-800 rounded-2xl rounded-bl-sm px-4 py-2 text-sm whitespace-pre-wrap break-words shadow-sm';
+    bubble.className = 'max-w-[80%] bg-white border border-gray-200 text-gray-800 rounded-2xl rounded-bl-sm px-4 py-2 text-sm break-words shadow-sm space-y-0.5';
     bubble.id = 'streaming-bubble';
 
     const cursor = document.createElement('span');
@@ -291,13 +613,73 @@
     return bubble;
   }
 
+  // ─── Markdown renderer (bold + bullets only) ─────────────────────────────
+  function renderMarkdown(text) {
+    // Split into lines, process each, then reassemble into block elements
+    const lines = text.split('\n');
+    let html = '';
+    let inList = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+
+      // Bullet: lines starting with "- " or "* "
+      const bulletMatch = line.match(/^(\s*)([-*])\s+(.*)$/);
+      if (bulletMatch) {
+        if (!inList) { html += '<ul class="list-disc pl-5 my-1 space-y-0.5">'; inList = true; }
+        html += `<li>${inlineMarkdown(bulletMatch[3])}</li>`;
+        continue;
+      }
+
+      // Close list if we were in one
+      if (inList) { html += '</ul>'; inList = false; }
+
+      // Heading: ### ## #
+      const headingMatch = line.match(/^(#{1,3})\s+(.*)$/);
+      if (headingMatch) {
+        const level = headingMatch[1].length;
+        const cls = level === 1 ? 'text-base font-bold mt-2' : 'text-sm font-semibold mt-1.5';
+        html += `<p class="${cls}">${inlineMarkdown(headingMatch[2])}</p>`;
+        continue;
+      }
+
+      // Blank line → spacer
+      if (line.trim() === '') {
+        html += '<div class="h-1"></div>';
+        continue;
+      }
+
+      // Normal paragraph line
+      html += `<p>${inlineMarkdown(line)}</p>`;
+    }
+
+    if (inList) html += '</ul>';
+    return html;
+  }
+
+  function inlineMarkdown(text) {
+    // Escape HTML first to prevent injection
+    text = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    // Bold: **text** or __text__
+    text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    text = text.replace(/__(.+?)__/g, '<strong>$1</strong>');
+    // Italic: *text* or _text_
+    text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    text = text.replace(/_(.+?)_/g, '<em>$1</em>');
+    // Inline code: `code`
+    text = text.replace(/`([^`]+)`/g, '<code class="bg-gray-100 rounded px-1 text-xs font-mono">$1</code>');
+    return text;
+  }
+
   function appendToken(text) {
     if (!streamingBubble) return;
     streamingText += text;
 
-    // Render accumulated text, then re-attach cursor (textContent clears children)
-    streamingBubble.textContent = streamingText;
-    // Re-attach cursor after updating textContent (which clears children)
+    // Render markdown, then re-attach cursor
+    streamingBubble.innerHTML = renderMarkdown(streamingText);
     const newCursor = document.createElement('span');
     newCursor.className = 'animate-pulse';
     newCursor.id = 'streaming-cursor';
@@ -310,9 +692,8 @@
 
   function finalizeStreamingBubble() {
     if (!streamingBubble) return;
-    // Remove blinking cursor, leave only the final text
-    const cursor = document.getElementById('streaming-cursor');
-    if (cursor) cursor.remove();
+    // Final render without cursor
+    streamingBubble.innerHTML = renderMarkdown(streamingText);
     streamingBubble = null;
     streamingText = '';
     setInputEnabled(true);
@@ -331,6 +712,7 @@
   function setInputEnabled(enabled) {
     document.getElementById('msg-input').disabled = !enabled;
     document.getElementById('send-btn').disabled = !enabled;
+    document.getElementById('attach-btn').disabled = !enabled;
     if (enabled) {
       document.getElementById('msg-input').focus();
     }
@@ -429,9 +811,13 @@
     const bubble = document.createElement('div');
     bubble.className = role === 'user'
       ? 'max-w-[80%] bg-blue-600 text-white rounded-2xl rounded-br-sm px-4 py-2 text-sm whitespace-pre-wrap break-words'
-      : 'max-w-[80%] bg-white border border-gray-200 text-gray-800 rounded-2xl rounded-bl-sm px-4 py-2 text-sm whitespace-pre-wrap break-words shadow-sm';
+      : 'max-w-[80%] bg-white border border-gray-200 text-gray-800 rounded-2xl rounded-bl-sm px-4 py-2 text-sm break-words shadow-sm space-y-0.5';
 
-    bubble.textContent = content;
+    if (role === 'assistant') {
+      bubble.innerHTML = renderMarkdown(content);
+    } else {
+      bubble.textContent = content;
+    }
     wrapper.appendChild(bubble);
     pane.appendChild(wrapper);
     pane.scrollTop = pane.scrollHeight;
@@ -450,17 +836,58 @@
     }
   }
 
+  // ─── File attachment helpers ──────────────────────────────────────────────
+  function handleFileSelected(input) {
+    const file = input.files[0];
+    if (!file) return;
+    pendingAttachment = { file, name: file.name };
+
+    const chipArea = document.getElementById('attachment-chip-area');
+    document.getElementById('attachment-chip-name').textContent = file.name;
+    chipArea.classList.remove('hidden');
+
+    // Reset the input so the same file can be re-selected if cleared
+    input.value = '';
+  }
+
+  function clearAttachment() {
+    pendingAttachment = null;
+    document.getElementById('attachment-chip-area').classList.add('hidden');
+    document.getElementById('attachment-chip-name').textContent = '';
+  }
+
   // ─── Sending messages ────────────────────────────────────────────────────
   async function sendMessage(event) {
     event.preventDefault();
     if (!activeThreadId) return;
 
     const input = document.getElementById('msg-input');
-    const content = input.value.trim();
-    if (!content) return;
+    let content = input.value.trim();
+    if (!content && !pendingAttachment) return;
 
     input.value = '';
     input.style.height = 'auto';
+
+    // If there's a pending attachment, upload it first
+    if (pendingAttachment) {
+      const formData = new FormData();
+      formData.append('file', pendingAttachment.file, pendingAttachment.name);
+      try {
+        const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
+        if (uploadRes.ok) {
+          const uploaded = await uploadRes.json();
+          const suffix = `\n\n[Attached file: ${uploaded.filename} at ${uploaded.path}]`;
+          content = content ? content + suffix : suffix.trim();
+        } else {
+          appendMessage('assistant', '⚠️ File upload failed. Please try again.');
+          return;
+        }
+      } catch (err) {
+        appendMessage('assistant', '⚠️ File upload failed: ' + err);
+        return;
+      }
+      clearAttachment();
+    }
 
     // Optimistically show user message
     appendMessage('user', content);
@@ -504,6 +931,44 @@
 
   // ─── Keyboard + textarea ─────────────────────────────────────────────────
   function handleKey(event) {
+    const dropdown = document.getElementById('skill-dropdown');
+    const visible = !dropdown.classList.contains('hidden');
+
+    if (visible) {
+      const items = dropdown.querySelectorAll('[data-skill-item]');
+      const active = dropdown.querySelector('[data-skill-item].bg-blue-50');
+      let idx = Array.from(items).indexOf(active);
+
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        if (active) active.classList.remove('bg-blue-50', 'text-blue-800');
+        idx = (idx + 1) % items.length;
+        items[idx].classList.add('bg-blue-50', 'text-blue-800');
+        items[idx].scrollIntoView({ block: 'nearest' });
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (active) active.classList.remove('bg-blue-50', 'text-blue-800');
+        idx = (idx - 1 + items.length) % items.length;
+        items[idx].classList.add('bg-blue-50', 'text-blue-800');
+        items[idx].scrollIntoView({ block: 'nearest' });
+        return;
+      }
+      if (event.key === 'Tab' || event.key === 'Enter') {
+        const highlighted = dropdown.querySelector('[data-skill-item].bg-blue-50') || items[0];
+        if (highlighted) {
+          event.preventDefault();
+          selectSkill(highlighted.dataset.skillName, highlighted.dataset.skillDesc);
+          return;
+        }
+      }
+      if (event.key === 'Escape') {
+        hideSkillDropdown();
+        return;
+      }
+    }
+
     // Enter (not Shift+Enter) → submit
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
@@ -515,6 +980,142 @@
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 160) + 'px';
   }
+
+  // ─── Skill autocomplete ───────────────────────────────────────────────────
+
+  // Built-in slash commands shown alongside skills in the dropdown
+  const _BUILTIN_COMMANDS = [
+    { name: "newthread",  trigger_description: "Start a new chat thread",                        builtin: true },
+    { name: "thread",     trigger_description: "Show the active thread info",                    builtin: true },
+    { name: "model",      trigger_description: "View or change the AI model  e.g. /model gpt-4o", builtin: true },
+    { name: "remember",   trigger_description: "Save a fact to memory  e.g. /remember my name is...", builtin: true },
+    { name: "ls",         trigger_description: "List workspace files  e.g. /ls telegram_uploads", builtin: true },
+  ];
+
+  let _skillsCache = null;
+
+  async function _fetchSkills() {
+    if (_skillsCache !== null) return _skillsCache;
+    try {
+      const resp = await fetch('/api/skills');
+      if (resp.ok) _skillsCache = await resp.json();
+      else _skillsCache = [];
+    } catch { _skillsCache = []; }
+    return _skillsCache;
+  }
+
+  async function handleSkillAutocomplete(textarea) {
+    const val = textarea.value;
+    const pos = textarea.selectionStart;
+    // Find the word before the cursor that starts with /
+    const before = val.slice(0, pos);
+    const match = before.match(/(?:^|\s)(\/\S*)$/);
+
+    if (!match) {
+      hideSkillDropdown();
+      return;
+    }
+
+    const query = match[1].slice(1).toLowerCase(); // text after /
+    const skills = await _fetchSkills();
+
+    // Merge built-ins first, then skills (skills may overlap by name — built-ins take priority)
+    const skillNames = new Set(skills.map(s => s.name));
+    const builtins = _BUILTIN_COMMANDS.filter(c => !skillNames.has(c.name));
+    const all = [...builtins, ...skills];
+
+    const filtered = query === ''
+      ? all
+      : all.filter(s =>
+          s.name.toLowerCase().includes(query) ||
+          s.trigger_description.toLowerCase().includes(query)
+        );
+
+    if (!filtered.length) {
+      hideSkillDropdown();
+      return;
+    }
+
+    showSkillDropdown(filtered);
+  }
+
+  function showSkillDropdown(items) {
+    const dropdown = document.getElementById('skill-dropdown');
+    dropdown.innerHTML = items.map((s, i) => {
+      const isBuiltin = s.builtin === true;
+      const badgeClass = isBuiltin
+        ? 'text-amber-600'
+        : 'text-blue-600';
+      const onclick = isBuiltin
+        ? `selectBuiltin('${escapeAttr(s.name)}')`
+        : `selectSkill('${escapeAttr(s.name)}', '${escapeAttr(s.trigger_description)}')`;
+      return `
+      <button type="button"
+              data-skill-item
+              onclick="${onclick}"
+              class="w-full text-left px-4 py-2.5 flex items-start gap-3 hover:bg-blue-50
+                     hover:text-blue-800 transition-colors border-b border-gray-100 last:border-0
+                     ${i === 0 ? 'bg-blue-50 text-blue-800' : 'text-gray-800'}">
+        <span class="font-mono text-xs font-semibold mt-0.5 ${badgeClass} shrink-0">/${escapeHtml(s.name)}</span>
+        <span class="text-xs text-gray-500 leading-relaxed">${escapeHtml(s.trigger_description)}</span>
+      </button>`;
+    }).join('');
+    dropdown.classList.remove('hidden');
+  }
+
+  function hideSkillDropdown() {
+    const dropdown = document.getElementById('skill-dropdown');
+    dropdown.classList.add('hidden');
+    dropdown.innerHTML = '';
+  }
+
+  function selectBuiltin(name) {
+    const ta = document.getElementById('msg-input');
+    const val = ta.value;
+    const pos = ta.selectionStart;
+    const before = val.slice(0, pos);
+    // Replace the /... token with the command (leave cursor after it for args)
+    const replaced = before.replace(/(?:^|(\s))(\/\S*)$/, (m, space) =>
+      (space || '') + `/${name} `
+    );
+    ta.value = replaced + val.slice(pos);
+    ta.selectionStart = ta.selectionEnd = replaced.length;
+    hideSkillDropdown();
+    ta.focus();
+    autoResize(ta);
+  }
+
+  function selectSkill(name, desc) {
+    const ta = document.getElementById('msg-input');
+    const val = ta.value;
+    const pos = ta.selectionStart;
+    const before = val.slice(0, pos);
+    // Replace the /... token with the skill invocation text
+    const replaced = before.replace(/(?:^|(\s))(\/\S*)$/, (m, space) =>
+      (space || '') + `load skill: ${name}`
+    );
+    ta.value = replaced + val.slice(pos);
+    ta.selectionStart = ta.selectionEnd = replaced.length;
+    hideSkillDropdown();
+    ta.focus();
+    autoResize(ta);
+  }
+
+  function escapeAttr(str) {
+    return String(str)
+      .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // Close dropdown when clicking outside
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#skill-dropdown') && !e.target.closest('#msg-input')) {
+      hideSkillDropdown();
+    }
+  });
+
+  // Invalidate skills cache when a new skill is uploaded (across tabs not needed, just in-session)
+  function invalidateSkillsCache() { _skillsCache = null; }
 
   // ─── Permission cards ─────────────────────────────────────────────────────
   function showPermissionCard(requestId, tool, prompt, args) {
@@ -611,5 +1212,15 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
   }
+
+// ─── Auto-load thread from URL query param (?thread=N) ───────────────────
+  (function autoLoadThread() {
+    const params = new URLSearchParams(window.location.search);
+    const tid = parseInt(params.get('thread'), 10);
+    if (tid) {
+      const btn = document.querySelector(`[data-thread-id="${tid}"]`);
+      loadThread(tid, btn || undefined);
+    }
+  })();
 </script>
 {% endblock %}

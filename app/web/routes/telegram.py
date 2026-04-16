@@ -404,6 +404,11 @@ async def telegram_webhook(
         # Get intent: caption > stored pending intent > generic fallback
         pending_file = await _get_and_clear_pending_file(chat_id)
         if text:
+            if pending_file:
+                logger.info(
+                    "telegram file upload: caption overrides stored pending intent for chat_id=%s",
+                    chat_id,
+                )
             intent = text
             thread_id = pending_file["thread_id"] if pending_file else None
         elif pending_file:
@@ -571,8 +576,8 @@ async def telegram_webhook(
                     except Exception:
                         pass
 
-                async def _run_redirect(tid: int) -> None:
-                    result_text = await _run_direct_thread(text, tid)
+                async def _run_redirect(tid: int, msg_text: str) -> None:
+                    result_text = await _run_direct_thread(msg_text, tid)
                     new_pending = await _has_pending_reply(chat_id)
                     if not new_pending and token:
                         try:
@@ -590,7 +595,7 @@ async def telegram_webhook(
                             logger.warning("telegram webhook: redirect task failed to send result: %s", exc)
                         await _register_pending_reply(chat_id, tid, conversation_id=None)
 
-                asyncio.create_task(_run_redirect(redirect_thread_id))
+                asyncio.create_task(_run_redirect(redirect_thread_id, text))
             return {"ok": True}
 
         conversation_id = pending.conversation_id

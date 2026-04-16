@@ -509,7 +509,7 @@ async def telegram_webhook(
                         )
                         await client.post(
                             f"https://api.telegram.org/bot{token}/sendMessage",
-                            json={"chat_id": chat_id, "text": "💬"},
+                            json={"chat_id": chat_id, "text": "..."},
                         )
                 except Exception as exc:
                     logger.warning("telegram file task: failed to send result: %s", exc)
@@ -771,7 +771,7 @@ async def telegram_webhook(
                                 )
                                 await client.post(
                                     f"https://api.telegram.org/bot{token}/sendMessage",
-                                    json={"chat_id": chat_id, "text": "💬"},
+                                    json={"chat_id": chat_id, "text": "..."},
                                 )
                         except Exception as exc:
                             logger.warning("telegram webhook: redirect task failed to send result: %s", exc)
@@ -832,7 +832,7 @@ async def telegram_webhook(
                         )
                         await client.post(
                             f"https://api.telegram.org/bot{token}/sendMessage",
-                            json={"chat_id": chat_id, "text": "💬"},
+                            json={"chat_id": chat_id, "text": "..."},
                         )
                 except Exception as exc:
                     logger.warning("telegram webhook: failed to send result: %s", exc)
@@ -866,7 +866,7 @@ async def telegram_webhook(
                     )
                     await client.post(
                         f"https://api.telegram.org/bot{token}/sendMessage",
-                        json={"chat_id": chat_id, "text": "💬"},
+                        json={"chat_id": chat_id, "text": "..."},
                     )
             except Exception as exc:
                 logger.warning("telegram webhook: failed to send result: %s", exc)

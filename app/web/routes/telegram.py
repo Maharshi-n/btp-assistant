@@ -614,6 +614,73 @@ async def telegram_webhook(
                 pass
         return {"ok": True}
 
+    # ── /remember <text> — save a memory entry ───────────────────────────────
+    if text.lower().startswith("/remember"):
+        fact = text[len("/remember"):].strip()
+        if not fact:
+            reply = "Usage: /remember <fact>\nExample: /remember My birthday is Jan 1"
+        else:
+            async with AsyncSessionLocal() as db:
+                from app.db.models import UserMemory
+                entry = UserMemory(content=fact)
+                db.add(entry)
+                await db.commit()
+            from app.agents.supervisor import invalidate_memory_cache
+            invalidate_memory_cache()
+            reply = f"Got it, remembered:\n{fact}"
+        if token:
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": reply},
+                    )
+            except Exception:
+                pass
+        return {"ok": True}
+
+    # ── /ls [folder] — list workspace files ──────────────────────────────────
+    if text.lower().startswith("/ls"):
+        import app.config as _cfg
+        folder = text[len("/ls"):].strip() or "."
+        workspace = _cfg.WORKSPACE_DIR
+        target = (workspace / folder).resolve()
+        # Safety: must stay inside workspace
+        try:
+            target.relative_to(workspace)
+        except ValueError:
+            reply = "Access denied: path is outside the workspace."
+            target = None
+        if target is not None:
+            if not target.exists():
+                reply = f"Folder not found: {folder}"
+            elif not target.is_dir():
+                reply = f"'{folder}' is a file, not a folder."
+            else:
+                entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+                if not entries:
+                    reply = f"{folder or 'workspace'}/  (empty)"
+                else:
+                    lines = []
+                    for e in entries[:40]:  # cap at 40 to avoid Telegram message limits
+                        prefix = "📄" if e.is_file() else "📁"
+                        size = f"  {e.stat().st_size:,}B" if e.is_file() else ""
+                        lines.append(f"{prefix} {e.name}{size}")
+                    if len(entries) > 40:
+                        lines.append(f"… and {len(entries) - 40} more")
+                    header = f"📂 {folder or 'workspace'}/"
+                    reply = header + "\n" + "\n".join(lines)
+        if token:
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": reply},
+                    )
+            except Exception:
+                pass
+        return {"ok": True}
+
     # Check end-of-conversation BEFORE looking up pending — if the user says
     # "no"/"done"/etc., we close the loop without running the supervisor.
 

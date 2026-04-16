@@ -307,3 +307,16 @@ class AutomationConversation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         _DT, server_default=func.now(), nullable=False
     )
+
+
+class TelegramCommand(Base):
+    __tablename__ = "telegram_commands"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    description: Mapped[str] = mapped_column(String(256), nullable=False)
+    preset_prompt: Mapped[str] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        _DT, server_default=func.now(), nullable=False
+    )

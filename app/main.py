@@ -14,7 +14,7 @@ from app.agents.supervisor import init_supervisor, shutdown_supervisor
 from app.automations.runtime import start_automations_runtime, stop_automations_runtime
 import app.config as app_config
 from app.db.engine import get_db, init_db
-from app.db.models import Automation, AutomationConversation, AutomationRun, AutoMemoryConfig, MCPServer, MCPTool, Message, OAuthToken, ScheduledTask, ScheduledTaskRun, Skill, TelegramPendingFile, TelegramPendingFileItem, TelegramPendingReply, Thread, User, UserMemory  # noqa: F401 — ensures models are registered
+from app.db.models import Automation, AutomationConversation, AutomationRun, AutoMemoryConfig, MCPServer, MCPTool, Message, OAuthToken, ScheduledTask, ScheduledTaskRun, Skill, TelegramCommand, TelegramPendingFile, TelegramPendingFileItem, TelegramPendingReply, Thread, User, UserMemory  # noqa: F401 — ensures models are registered
 from app.db.seed import seed_admin
 from app.web.deps import NotAuthenticated, require_user
 from app.web.routes.audit import router as audit_router

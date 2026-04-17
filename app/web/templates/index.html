@@ -47,11 +47,10 @@
       {% for thread in threads %}
       <button
         class="thread-item w-full text-left px-3 py-2 rounded-lg text-sm
-               text-gray-300 hover:bg-gray-700 hover:text-white transition-colors"
+               text-gray-300 hover:bg-gray-700 hover:text-white transition-colors truncate"
         data-thread-id="{{ thread.id }}"
         onclick="loadThread({{ thread.id }}, this)">
-        <span class="truncate block">{{ thread.title }}</span>
-        <span class="text-xs text-gray-500">#{{ thread.id }}</span>
+        {{ thread.title }}
       </button>
       {% else %}
       <p class="text-gray-500 text-xs px-3 py-2">No chats yet</p>
@@ -177,9 +176,12 @@
         </svg>
       </button>
 
-      <h1 id="thread-title" class="text-sm font-medium text-gray-700 flex-1 truncate">
-        Select or create a chat
-      </h1>
+      <div class="flex-1 min-w-0">
+        <h1 id="thread-title" class="text-sm font-medium text-gray-700 truncate">
+          Select or create a chat
+        </h1>
+        <p id="thread-id-label" class="text-xs text-gray-400 hidden"></p>
+      </div>
 
       <!-- Model switcher -->
       <select id="model-select"
@@ -781,6 +783,7 @@
     }
 
     renderMessages(messages, thread ? thread.title : 'Chat');
+    setThreadHeader(thread ? thread.title : 'Chat', threadId);
 
     // Enable input and model switcher
     setInputEnabled(true);
@@ -790,6 +793,17 @@
     connectWs(threadId);
 
     closeSidebar();
+  }
+
+  function setThreadHeader(title, threadId) {
+    document.getElementById('thread-title').textContent = title || 'Chat';
+    const lbl = document.getElementById('thread-id-label');
+    if (threadId) {
+      lbl.textContent = '#' + threadId;
+      lbl.classList.remove('hidden');
+    } else {
+      lbl.classList.add('hidden');
+    }
   }
 
   function renderMessages(messages, title) {
@@ -842,7 +856,7 @@
     const thread = threads.find(t => t.id === threadId);
     if (thread) {
       sidebarBtn.textContent = thread.title;
-      document.getElementById('thread-title').textContent = thread.title;
+      setThreadHeader(thread.title, thread.id);
     }
   }
 

@@ -42,23 +42,26 @@ async def telegram_send(message: str, config: RunnableConfig = None) -> str:
     # If the user has an active conversation, append thread ID so they know
     # where this notification came from and can /switch to it later.
     text_to_send = message
-    if thread_id:
-        try:
-            from app.db.engine import AsyncSessionLocal
-            from app.db.models import TelegramPendingReply
-            from sqlalchemy import select
-            now = datetime.now(timezone.utc)
-            async with AsyncSessionLocal() as db:
-                existing = await db.execute(
-                    select(TelegramPendingReply)
-                    .where(TelegramPendingReply.chat_id == chat_id)
-                    .where(TelegramPendingReply.expires_at > now)
-                )
-                active = existing.scalars().first()
-            if active is not None and active.thread_id != thread_id:
-                text_to_send = f"{message}\n\n[Thread #{thread_id} — /switch {thread_id} to follow up]"
-        except Exception:
-            pass
+    try:
+        from app.db.engine import AsyncSessionLocal
+        from app.db.models import TelegramPendingReply
+        from sqlalchemy import select
+        now = datetime.now(timezone.utc)
+        async with AsyncSessionLocal() as db:
+            existing = await db.execute(
+                select(TelegramPendingReply)
+                .where(TelegramPendingReply.chat_id == chat_id)
+                .where(TelegramPendingReply.expires_at > now)
+            )
+            active = existing.scalars().first()
+        logger.info(
+            "telegram_send: thread_id=%s active_thread=%s",
+            thread_id, active.thread_id if active else None,
+        )
+        if active is not None and active.thread_id != thread_id:
+            text_to_send = f"{message}\n\n[Thread #{thread_id} — /switch {thread_id} to follow up]"
+    except Exception as exc:
+        logger.warning("telegram_send: clash check failed: %s", exc)
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:

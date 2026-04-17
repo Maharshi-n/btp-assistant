@@ -193,6 +193,26 @@ async def _get_and_clear_pending_file_items(chat_id: str) -> list[dict]:
         return items
 
 
+async def _transcribe_voice(file_path: str) -> str | None:
+    """Transcribe a voice note using OpenAI Whisper. Returns transcript or None on failure."""
+    from openai import AsyncOpenAI
+    import app.config as _cfg
+    try:
+        client = AsyncOpenAI(api_key=_cfg.OPENAI_API_KEY)
+        with open(file_path, "rb") as f:
+            resp = await client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                response_format="text",
+            )
+        transcript = resp.strip() if isinstance(resp, str) else str(resp).strip()
+        logger.info("_transcribe_voice: transcribed %s → %d chars", file_path, len(transcript))
+        return transcript or None
+    except Exception as exc:
+        logger.warning("_transcribe_voice: failed: %s", exc)
+        return None
+
+
 async def _parse_reminder_datetime(text: str) -> datetime | None:
     """Use OpenAI to extract a future datetime from natural language reminder text.
 
@@ -569,8 +589,52 @@ async def telegram_webhook(
 
     token = app_config.TELEGRAM_BOT_TOKEN
 
+    # ── Voice message → Whisper transcription ─────────────────────────────
+    # Voice notes are treated as spoken text prompts, not file uploads.
+    if "voice" in message:
+        voice_result = await _download_telegram_file(token, message)
+        if voice_result is None:
+            if token:
+                try:
+                    async with httpx.AsyncClient(timeout=5) as client:
+                        await client.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={"chat_id": chat_id, "text": "Sorry, I couldn't download the voice message."},
+                        )
+                except Exception:
+                    pass
+            return {"ok": True}
+
+        _, voice_path = voice_result
+        transcript = await _transcribe_voice(voice_path)
+        if transcript is None:
+            if token:
+                try:
+                    async with httpx.AsyncClient(timeout=5) as client:
+                        await client.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={"chat_id": chat_id, "text": "Sorry, I couldn't transcribe the voice message."},
+                        )
+                except Exception:
+                    pass
+            return {"ok": True}
+
+        # Echo transcript back so user knows what was heard
+        if token:
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": f"🎙 {transcript}"},
+                    )
+            except Exception:
+                pass
+
+        # Treat transcript as the user's text message — fall through to normal flow
+        text = transcript
+
     # ── File handling ─────────────────────────────────────────────────────
-    has_file = any(k in message for k in ("document", "photo", "audio", "voice", "video"))
+    has_file = any(k in message for k in ("document", "photo", "audio", "video"))
 
     if has_file:
         result = await _download_telegram_file(token, message)

@@ -57,7 +57,7 @@ async def telegram_ask(
     question: str,
     continuation_prompt: str,
     conversation_id: int | None = None,
-    config: RunnableConfig | None = None,
+    config: RunnableConfig = None,
 ) -> str:
     """Ask the user a question on Telegram and wait for their reply before continuing.
 
@@ -93,8 +93,8 @@ async def telegram_ask(
     except Exception as exc:
         return f"Failed to send question via Telegram: {exc}"
 
-    # Resolve real thread_id from LangGraph config
-    cfg = (config or {}).get("configurable", {}) if config else {}
+    # Resolve real thread_id from LangGraph config (injected by LangChain)
+    cfg = config.get("configurable", {}) if isinstance(config, dict) else {}
     thread_id_raw = cfg.get("ws_thread_id") or cfg.get("thread_id") or 0
     try:
         thread_id = int(thread_id_raw)

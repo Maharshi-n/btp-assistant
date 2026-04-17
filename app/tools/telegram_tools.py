@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 @tool
-async def telegram_send(message: str) -> str:
+async def telegram_send(message: str, config: RunnableConfig = None) -> str:
     """Send a message to the user's Telegram chat.
 
     Args:
@@ -31,15 +31,39 @@ async def telegram_send(message: str) -> str:
         logger.warning("telegram_send called but TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not configured")
         return "Telegram not configured — skipping notification."
 
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-    }
+    # Resolve thread_id from LangGraph config
+    cfg = config.get("configurable", {}) if isinstance(config, dict) else {}
+    thread_id_raw = cfg.get("ws_thread_id") or cfg.get("thread_id") or 0
+    try:
+        thread_id = int(thread_id_raw)
+    except (TypeError, ValueError):
+        thread_id = 0
 
+    # If the user has an active conversation, append thread ID so they know
+    # where this notification came from and can /switch to it later.
+    text_to_send = message
+    if thread_id:
+        try:
+            from app.db.engine import AsyncSessionLocal
+            from app.db.models import TelegramPendingReply
+            from sqlalchemy import select
+            now = datetime.now(timezone.utc)
+            async with AsyncSessionLocal() as db:
+                existing = await db.execute(
+                    select(TelegramPendingReply)
+                    .where(TelegramPendingReply.chat_id == chat_id)
+                    .where(TelegramPendingReply.expires_at > now)
+                )
+                active = existing.scalars().first()
+            if active is not None and active.thread_id != thread_id:
+                text_to_send = f"{message}\n\n[Thread #{thread_id} — /switch {thread_id} to follow up]"
+        except Exception:
+            pass
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(url, json=payload)
+            resp = await client.post(url, json={"chat_id": chat_id, "text": text_to_send})
             if resp.status_code == 200:
                 logger.info("Telegram notification sent successfully")
                 return "Sent."

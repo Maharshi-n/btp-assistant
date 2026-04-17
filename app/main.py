@@ -88,6 +88,7 @@ async def on_startup() -> None:
     await _reregister_telegram_webhook()
     await _warm_mcp_manager()
     await _register_scheduled_tasks()
+    await _ensure_rag_skill_registered()
     from app.automations.conversations import cleanup_old_conversations
     try:
         n = await cleanup_old_conversations()
@@ -140,6 +141,30 @@ async def _warm_mcp_manager() -> None:
             await get_manager().reconnect_all(servers)
     except Exception as exc:
         logging.getLogger(__name__).warning("MCP warm-up error: %s", exc)
+
+
+async def _ensure_rag_skill_registered() -> None:
+    """Register the built-in RAG skill in the Skill table if not already present."""
+    try:
+        from app.db.engine import AsyncSessionLocal
+        from app.db.models import Skill
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Skill).where(Skill.name == "rag"))
+            existing = result.scalar_one_or_none()
+            if existing is None:
+                db.add(Skill(
+                    name="rag",
+                    file_path="workspace/skills/rag.md",
+                    trigger_description=(
+                        "Use for semantic search across files — find/locate content, "
+                        "search by meaning, cross-file queries. NOT for full extraction or summarization."
+                    ),
+                    enabled=True,
+                ))
+                await db.commit()
+                logging.getLogger(__name__).info("Registered built-in RAG skill")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Failed to register RAG skill: %s", exc)
 
 
 async def _register_scheduled_tasks() -> None:

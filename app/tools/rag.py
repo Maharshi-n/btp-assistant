@@ -31,14 +31,20 @@ _TEXT_EXTENSIONS = {
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _get_collection():
-    """Return (or create) the ChromaDB persistent collection."""
-    import chromadb
+_chroma_client = None
+_chroma_collection = None
 
-    chroma_dir = app_config.WORKSPACE_DIR / ".chromadb"
-    chroma_dir.mkdir(parents=True, exist_ok=True)
-    client = chromadb.PersistentClient(path=str(chroma_dir))
-    return client.get_or_create_collection(name="raion_rag")
+
+def _get_collection():
+    """Return (or create) the ChromaDB persistent collection — module-level singleton."""
+    global _chroma_client, _chroma_collection
+    if _chroma_collection is None:
+        import chromadb
+        chroma_dir = app_config.WORKSPACE_DIR / ".chromadb"
+        chroma_dir.mkdir(parents=True, exist_ok=True)
+        _chroma_client = chromadb.PersistentClient(path=str(chroma_dir))
+        _chroma_collection = _chroma_client.get_or_create_collection(name="raion_rag")
+    return _chroma_collection
 
 
 def _extract_text(file_path: str) -> str | None:
@@ -78,7 +84,7 @@ def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str
     # Split on sentence boundary candidates first
     import re
     # Split on ". " or "\n" to get natural segments
-    raw_segments = re.split(r"(?<=\. )|(?<=\n)", text)
+    raw_segments = [s for s in re.split(r"(?<=\. )|(?<=\n)", text) if s.strip()]
 
     chunks: list[str] = []
     current = ""
@@ -116,15 +122,17 @@ def _file_id_prefix(file_path: str) -> str:
 
 
 def _embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed a batch of text strings using OpenAI text-embedding-3-small."""
+    """Embed a batch of text strings using OpenAI text-embedding-3-small (batched at ≤512)."""
     from openai import OpenAI
 
     client = OpenAI(api_key=app_config.OPENAI_API_KEY)
-    response = client.embeddings.create(
-        input=texts,
-        model="text-embedding-3-small",
-    )
-    return [item.embedding for item in response.data]
+    BATCH_SIZE = 512
+    all_embeddings: list[list[float]] = []
+    for i in range(0, len(texts), BATCH_SIZE):
+        batch = [t[:8000] for t in texts[i : i + BATCH_SIZE]]  # truncate to ~8000 chars per item
+        response = client.embeddings.create(input=batch, model="text-embedding-3-small")
+        all_embeddings.extend(item.embedding for item in response.data)
+    return all_embeddings
 
 
 # ---------------------------------------------------------------------------
@@ -238,9 +246,10 @@ def rag_ingest(
 
     # --- build summary ---
     parts: list[str] = []
-    all_done = ingested + cached
-    if all_done:
-        parts.append("Ingested " + str(len(ingested + cached)) + " file(s): " + ", ".join(all_done))
+    if ingested:
+        parts.append(f"Ingested {len(ingested)} file(s): " + ", ".join(ingested))
+    if cached:
+        parts.append("Already cached (skipped): " + ", ".join(cached))
     if skipped:
         parts.append("Skipped: " + ", ".join(skipped))
 
@@ -314,8 +323,8 @@ def rag_search(
         file_path = meta.get("file_path", "unknown")
         chunk_idx = meta.get("chunk_index", "?")
         basename = os.path.basename(file_path)
-        # ChromaDB returns L2 distance; convert to a rough similarity score
-        similarity = round(1 / (1 + dist), 3)
+        # ChromaDB default metric is cosine; distance in [0,2], 0=identical
+        similarity = round(1 - dist / 2, 3)
         lines.append(
             f"{i}. [{basename}] (chunk {chunk_idx}, similarity={similarity})\n"
             f"   {doc[:400]}"

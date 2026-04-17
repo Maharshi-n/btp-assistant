@@ -387,6 +387,68 @@ async def _register_pending_reply(
         await db.commit()
 
 
+async def _register_or_notify_clash(
+    chat_id: str,
+    thread_id: int,
+    token: str | None,
+    last_reply: str,
+    conversation_id: int | None = None,
+) -> None:
+    """Register pending reply, or send a clash notification if a different thread is active.
+
+    If no active conversation exists, or the active thread is the same thread,
+    register normally. If a *different* thread is active, send a notification
+    with the thread ID so the user can /switch later — don't overwrite their
+    current conversation.
+    """
+    now = datetime.now(timezone.utc)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(TelegramPendingReply)
+            .where(TelegramPendingReply.chat_id == chat_id)
+            .where(TelegramPendingReply.expires_at > now)
+        )
+        active = result.scalars().first()
+
+    if active is not None and active.thread_id != thread_id:
+        # Different thread is active — notify without overwriting
+        if token:
+            try:
+                async with AsyncSessionLocal() as db:
+                    clash_thread = await db.get(Thread, thread_id)
+                title = clash_thread.title if clash_thread else f"Thread #{thread_id}"
+                notification = (
+                    f"[{title} — Thread #{thread_id}]\n"
+                    f"{_smart_truncate(last_reply, limit=800)}\n\n"
+                    f"/switch {thread_id} to continue this when ready."
+                )
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": notification},
+                    )
+            except Exception as exc:
+                logger.warning("_register_or_notify_clash: failed to send notification: %s", exc)
+        return
+
+    # No clash — register normally
+    await _register_pending_reply(chat_id, thread_id, conversation_id=conversation_id)
+
+
+async def _notify_thread_created(chat_id: str, thread_id: int, token: str | None) -> None:
+    """Send a brief thread ID notice when a new thread is created for this chat."""
+    if not token:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": f"[Thread #{thread_id}]"},
+            )
+    except Exception as exc:
+        logger.warning("_notify_thread_created: failed: %s", exc)
+
+
 async def _has_pending_reply(chat_id: str) -> bool:
     """Return True if a non-expired pending reply exists for this chat_id."""
     now = datetime.now(timezone.utc)
@@ -737,6 +799,7 @@ async def telegram_webhook(
         if not thread_id and pending_file:
             thread_id = pending_file.get("thread_id")
 
+        _new_file_thread = False
         if not thread_id:
             async with AsyncSessionLocal() as db:
                 thread_title = (intent or filename)[:60]
@@ -745,7 +808,10 @@ async def telegram_webhook(
                 await db.commit()
                 await db.refresh(new_thread)
                 thread_id = new_thread.id
+            _new_file_thread = True
 
+        if _new_file_thread:
+            await _notify_thread_created(chat_id, thread_id, token)
         if token:
             try:
                 async with httpx.AsyncClient(timeout=5) as client:
@@ -772,7 +838,7 @@ async def telegram_webhook(
                         )
                 except Exception as exc:
                     logger.warning("telegram file task: failed to send result: %s", exc)
-            await _register_pending_reply(chat_id, tid, conversation_id=None)
+            await _register_or_notify_clash(chat_id, tid, token, result_text, conversation_id=None)
 
         asyncio.create_task(_run_file_task(thread_id, prompt, file_context))
         return {"ok": True}
@@ -797,6 +863,7 @@ async def telegram_webhook(
 
         # Clear any existing pending reply and point to the new thread
         await _register_pending_reply(chat_id, new_thread_id, conversation_id=None)
+        await _notify_thread_created(chat_id, new_thread_id, token)
 
         if token:
             try:
@@ -1154,7 +1221,7 @@ async def telegram_webhook(
                             )
                     except Exception as exc:
                         logger.warning("telegram custom cmd: failed to send result: %s", exc)
-                await _register_pending_reply(chat_id, tid, conversation_id=None)
+                await _register_or_notify_clash(chat_id, tid, token, result_text, conversation_id=None)
 
             asyncio.create_task(_run_custom_cmd(_cmd_thread_id, _cmd_prompt))
             return {"ok": True}
@@ -1192,6 +1259,7 @@ async def telegram_webhook(
                         delete(TelegramPendingReply).where(TelegramPendingReply.chat_id == chat_id)
                     )
                     await db.commit()
+            _new_cmd_thread = False
             if not _cmd_thread_id:
                 async with AsyncSessionLocal() as db:
                     _ct = Thread(title=f"/{_cmd_name}", model="gpt-4o-mini")
@@ -1199,6 +1267,9 @@ async def telegram_webhook(
                     await db.commit()
                     await db.refresh(_ct)
                     _cmd_thread_id = _ct.id
+                _new_cmd_thread = True
+            if _new_cmd_thread:
+                await _notify_thread_created(chat_id, _cmd_thread_id, token)
 
             if token:
                 try:
@@ -1226,7 +1297,7 @@ async def telegram_webhook(
                             )
                     except Exception as exc:
                         logger.warning("telegram custom cmd: failed to send result: %s", exc)
-                    await _register_pending_reply(chat_id, tid, conversation_id=None)
+                    await _register_or_notify_clash(chat_id, tid, token, result_text, conversation_id=None)
 
             asyncio.create_task(_run_custom_cmd(_cmd_thread_id, _full_prompt))
             return {"ok": True}
@@ -1315,7 +1386,7 @@ async def telegram_webhook(
                                 )
                         except Exception as exc:
                             logger.warning("telegram batch task: failed to send result: %s", exc)
-                    await _register_pending_reply(chat_id, tid, conversation_id=None)
+                    await _register_or_notify_clash(chat_id, tid, token, result_text, conversation_id=None)
 
                 asyncio.create_task(_run_batch(_batch_thread_id, _batch_intent, _batch_file_context))
                 return {"ok": True}
@@ -1338,6 +1409,7 @@ async def telegram_webhook(
             elif pending_file_row:
                 # User redirected away from file intent — run agent with new text
                 redirect_thread_id = pending_file_row.get("thread_id")
+                _new_redirect_thread = False
                 if not redirect_thread_id:
                     async with AsyncSessionLocal() as db:
                         new_thread = Thread(title=text[:60], model="gpt-4o-mini")
@@ -1345,6 +1417,9 @@ async def telegram_webhook(
                         await db.commit()
                         await db.refresh(new_thread)
                         redirect_thread_id = new_thread.id
+                    _new_redirect_thread = True
+                if _new_redirect_thread:
+                    await _notify_thread_created(chat_id, redirect_thread_id, token)
                 if token:
                     try:
                         async with httpx.AsyncClient(timeout=5) as client:
@@ -1371,7 +1446,7 @@ async def telegram_webhook(
                                 )
                         except Exception as exc:
                             logger.warning("telegram webhook: redirect task failed to send result: %s", exc)
-                        await _register_pending_reply(chat_id, tid, conversation_id=None)
+                        await _register_or_notify_clash(chat_id, tid, token, result_text, conversation_id=None)
 
                 asyncio.create_task(_run_redirect(redirect_thread_id, text))
             return {"ok": True}
@@ -1432,8 +1507,7 @@ async def telegram_webhook(
                         )
                 except Exception as exc:
                     logger.warning("telegram webhook: failed to send result: %s", exc)
-                # Re-register pending so the next reply continues this thread
-                await _register_pending_reply(chat_id, db_tid, conversation_id=None)
+                await _register_or_notify_clash(chat_id, db_tid, token, result_text, conversation_id=None)
 
         asyncio.create_task(_run_direct(db_thread_id))
         return {"ok": True}
@@ -1466,8 +1540,7 @@ async def telegram_webhook(
                     )
             except Exception as exc:
                 logger.warning("telegram webhook: failed to send result: %s", exc)
-            # Re-register pending so the next reply continues this conversation
-            await _register_pending_reply(chat_id, pending_thread_id, conversation_id=conv_id)
+            await _register_or_notify_clash(chat_id, pending_thread_id, token, result, conversation_id=conv_id)
 
     asyncio.create_task(_run_and_notify(conversation_id))
 

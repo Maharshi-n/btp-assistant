@@ -47,10 +47,11 @@
       {% for thread in threads %}
       <button
         class="thread-item w-full text-left px-3 py-2 rounded-lg text-sm
-               text-gray-300 hover:bg-gray-700 hover:text-white transition-colors truncate"
+               text-gray-300 hover:bg-gray-700 hover:text-white transition-colors"
         data-thread-id="{{ thread.id }}"
         onclick="loadThread({{ thread.id }}, this)">
-        {{ thread.title }}
+        <span class="truncate block">{{ thread.title }}</span>
+        <span class="text-xs text-gray-500">#{{ thread.id }}</span>
       </button>
       {% else %}
       <p class="text-gray-500 text-xs px-3 py-2">No chats yet</p>

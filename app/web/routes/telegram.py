@@ -901,6 +901,7 @@ async def telegram_webhook(
             "Commands:\n"
             "/newthread [title] — start a new thread\n"
             "/thread — show active thread\n"
+            "/switch <id> — switch to a parked thread\n"
             "/model [name] — view or change AI model\n"
             "/remember <fact> — save something to memory\n"
             "/ls [folder] — list workspace files\n"
@@ -908,7 +909,8 @@ async def telegram_webhook(
             "  e.g. /remind at 5pm review the report\n"
             "  e.g. /remind in 30 minutes check email\n\n"
             "Send a file anytime — I'll ask what to do with it.\n"
-            "Send multiple files then type 'done' to process them all together."
+            "Send multiple files then type 'done' to process them all together.\n"
+            "Send a voice note — it'll be transcribed and treated as a message."
         )
         # Append enabled custom commands
         async with AsyncSessionLocal() as db:
@@ -1008,6 +1010,50 @@ async def telegram_webhook(
             reply = "Usage: /remind <when> <what>\nExamples:\n  /remind at 5pm review the report\n  /remind in 30 minutes check email"
         else:
             reply = await _parse_and_schedule_reminder(remind_text, chat_id, token)
+        if token:
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": reply},
+                    )
+            except Exception:
+                pass
+        return {"ok": True}
+
+    # ── /switch <thread_id> — resume a parked automation thread ──────────────
+    if _text_norm.lower().startswith("/switch"):
+        _switch_arg = _text_norm[len("/switch"):].strip()
+        if not _switch_arg.isdigit():
+            reply = "Usage: /switch <thread_id>\nExample: /switch 42"
+        else:
+            _switch_tid = int(_switch_arg)
+            async with AsyncSessionLocal() as db:
+                _switch_thread = await db.get(Thread, _switch_tid)
+            if _switch_thread is None:
+                reply = f"Thread #{_switch_tid} not found."
+            else:
+                # Fetch last AI message from that thread
+                async with AsyncSessionLocal() as db:
+                    from sqlalchemy import desc
+                    _last_msg_result = await db.execute(
+                        select(Message)
+                        .where(Message.thread_id == _switch_tid)
+                        .where(Message.role == "assistant")
+                        .order_by(desc(Message.created_at))
+                        .limit(1)
+                    )
+                    _last_msg = _last_msg_result.scalars().first()
+
+                # Register this thread as active
+                await _register_pending_reply(chat_id, _switch_tid, conversation_id=None)
+
+                last_text = _last_msg.content if _last_msg else "(no messages yet)"
+                reply = (
+                    f"Switched to Thread #{_switch_tid}: \"{_switch_thread.title}\"\n\n"
+                    f"Last message:\n{_smart_truncate(last_text, limit=800)}"
+                )
+
         if token:
             try:
                 async with httpx.AsyncClient(timeout=5) as client:

@@ -1043,6 +1043,78 @@ async def telegram_webhook(
             asyncio.create_task(_run_custom_cmd(_cmd_thread_id, _cmd_prompt))
             return {"ok": True}
 
+    # ── Custom user-defined commands ──────────────────────────────────────────
+    if _text_norm.startswith("/"):
+        _cmd_name = _text_norm[1:].split()[0].lower()  # e.g. "mnsummary" from "/mnsummary foo"
+        _cmd_args = _text_norm[len("/" + _cmd_name):].strip()  # everything after the command name
+        async with AsyncSessionLocal() as db:
+            from app.db.models import TelegramCommand as _TGCmd
+            _cmd_result = await db.execute(
+                select(_TGCmd)
+                .where(_TGCmd.name == _cmd_name)
+                .where(_TGCmd.enabled == True)  # noqa: E712
+            )
+            _custom_cmd = _cmd_result.scalars().first()
+        if _custom_cmd is not None:
+            # Expand preset_prompt; append any args the user typed after the command
+            _base_prompt = _custom_cmd.preset_prompt or _custom_cmd.description
+            _full_prompt = f"{_base_prompt}\n\n{_cmd_args}".strip() if _cmd_args else _base_prompt
+
+            # Resolve or create thread
+            _cmd_thread_id: int | None = None
+            _now_cmd = datetime.now(timezone.utc)
+            async with AsyncSessionLocal() as db:
+                _tpr_r = await db.execute(
+                    select(TelegramPendingReply)
+                    .where(TelegramPendingReply.chat_id == chat_id)
+                    .where(TelegramPendingReply.expires_at > _now_cmd)
+                )
+                _active_tpr = _tpr_r.scalars().first()
+                if _active_tpr:
+                    _cmd_thread_id = _active_tpr.thread_id
+                    await db.execute(
+                        delete(TelegramPendingReply).where(TelegramPendingReply.chat_id == chat_id)
+                    )
+                    await db.commit()
+            if not _cmd_thread_id:
+                async with AsyncSessionLocal() as db:
+                    _ct = Thread(title=f"/{_cmd_name}", model="gpt-4o-mini")
+                    db.add(_ct)
+                    await db.commit()
+                    await db.refresh(_ct)
+                    _cmd_thread_id = _ct.id
+
+            if token:
+                try:
+                    async with httpx.AsyncClient(timeout=5) as client:
+                        await client.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={"chat_id": chat_id, "text": "Got it, working on it..."},
+                        )
+                except Exception:
+                    pass
+
+            async def _run_custom_cmd(tid: int, prompt: str) -> None:
+                result_text = await _run_direct_thread(prompt, tid)
+                new_pending = await _has_pending_reply(chat_id)
+                if not new_pending and token:
+                    try:
+                        async with httpx.AsyncClient(timeout=10) as client:
+                            await client.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": _smart_truncate(result_text)},
+                            )
+                            await client.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": "..."},
+                            )
+                    except Exception as exc:
+                        logger.warning("telegram custom cmd: failed to send result: %s", exc)
+                    await _register_pending_reply(chat_id, tid, conversation_id=None)
+
+            asyncio.create_task(_run_custom_cmd(_cmd_thread_id, _full_prompt))
+            return {"ok": True}
+
     # Check end-of-conversation BEFORE looking up pending — if the user says
     # "no"/"done"/etc., we close the loop without running the supervisor.
 

@@ -190,7 +190,7 @@ async def telegram_ask(
 
 
 @tool
-async def schedule_message(message: str, delay_seconds: int) -> str:
+async def schedule_message(message: str, delay_seconds: int, config: RunnableConfig = None) -> str:
     """Schedule a Telegram message to be sent after a delay.
 
     Use this when the user asks to be reminded, woken up, or notified after
@@ -223,16 +223,43 @@ async def schedule_message(message: str, delay_seconds: int) -> str:
     if delay_seconds < 1:
         return "delay_seconds must be at least 1."
 
+    # Capture thread_id now (from LangGraph config) so the scheduled job can
+    # append it when it fires — at fire time there's no config available.
+    cfg = config.get("configurable", {}) if isinstance(config, dict) else {}
+    thread_id_raw = cfg.get("ws_thread_id") or cfg.get("thread_id") or 0
+    try:
+        source_thread_id = int(thread_id_raw)
+    except (TypeError, ValueError):
+        source_thread_id = 0
+
     fire_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
     job_id = f"scheduled_msg_{fire_at.timestamp()}"
 
     async def _send() -> None:
         try:
             import httpx
+            text_to_send = message
+            if source_thread_id:
+                try:
+                    from app.db.engine import AsyncSessionLocal
+                    from app.db.models import TelegramPendingReply
+                    from sqlalchemy import select
+                    now = datetime.now(timezone.utc)
+                    async with AsyncSessionLocal() as db:
+                        existing = await db.execute(
+                            select(TelegramPendingReply)
+                            .where(TelegramPendingReply.chat_id == chat_id)
+                            .where(TelegramPendingReply.expires_at > now)
+                        )
+                        active = existing.scalars().first()
+                    if active is not None and active.thread_id != source_thread_id:
+                        text_to_send = f"{message}\n\n[Thread #{source_thread_id} — /switch {source_thread_id} to follow up]"
+                except Exception:
+                    pass
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(
                     f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": chat_id, "text": message},
+                    json={"chat_id": chat_id, "text": text_to_send},
                 )
             logger.info("schedule_message: fired job %s", job_id)
         except Exception as exc:

@@ -420,6 +420,23 @@ async def update_thread(
     return {"id": thread.id, "model": thread.model}
 
 
+@router.delete("/threads/{thread_id}")
+async def delete_thread(
+    thread_id: int,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_user),
+):
+    thread = await db.get(Thread, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    from sqlalchemy import delete as sa_delete
+    await db.execute(sa_delete(Message).where(Message.thread_id == thread_id))
+    await db.delete(thread)
+    await db.commit()
+    await _clear_lg_checkpoint(thread_id)
+    return {"deleted": True}
+
+
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),

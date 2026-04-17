@@ -146,6 +146,20 @@ def policy_telegram_ask(args: dict) -> Decision:
 
 
 # ---------------------------------------------------------------------------
+# RAG tools
+# ---------------------------------------------------------------------------
+
+def policy_rag_ingest(args: dict) -> Decision:
+    """RAG ingestion reads files and writes to local vector store — auto."""
+    return "auto"
+
+
+def policy_rag_search(args: dict) -> Decision:
+    """RAG search is a local read-only operation — auto."""
+    return "auto"
+
+
+# ---------------------------------------------------------------------------
 # Dispatch table — maps tool name → policy function
 # ---------------------------------------------------------------------------
 
@@ -171,18 +185,64 @@ _POLICY_TABLE: dict[str, object] = {
     "calendar_create_event": policy_calendar_create_event,
     "telegram_send": policy_telegram_send,
     "telegram_ask": policy_telegram_ask,
+    # Skills — read-only, always auto
+    "read_skill": lambda args: "auto",
+    "save_draft": lambda args: "auto",
+    "schedule_message": lambda args: "auto",
+    # RAG — local vector store operations
+    "rag_ingest": policy_rag_ingest,
+    "rag_search": policy_rag_search,
 }
 
 
 def get_decision(tool_name: str, args: dict) -> Decision:
     """Return the policy decision for a given tool and its arguments.
 
+    MCP tools (prefixed mcp__) look up their permission from the DB.
     Falls back to "ask" for unknown tools (safe default).
     """
     fn = _POLICY_TABLE.get(tool_name)
-    if fn is None:
+    if fn is not None:
+        return fn(args)  # type: ignore[operator]
+
+    if tool_name.startswith("mcp__"):
+        return _mcp_tool_decision(tool_name)
+
+    return "ask"
+
+
+def _mcp_tool_decision(tool_name: str) -> Decision:
+    """Look up MCP tool permission from DB synchronously via a cached map."""
+    try:
+        import asyncio
+        from app.db.engine import AsyncSessionLocal
+        from app.db.models import MCPTool
+        from sqlalchemy import select as sa_select
+
+        async def _fetch():
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    sa_select(MCPTool).where(MCPTool.name == tool_name)
+                )
+                row = result.scalars().first()
+                if row is None:
+                    return "ask"
+                return row.permission  # "auto" | "ask"
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # We're inside an async context — schedule and wait
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(asyncio.run, _fetch())
+                    return future.result(timeout=2)
+            else:
+                return loop.run_until_complete(_fetch())
+        except Exception:
+            return "ask"
+    except Exception:
         return "ask"
-    return fn(args)  # type: ignore[operator]
 
 
 def human_readable_prompt(tool_name: str, args: dict) -> str:

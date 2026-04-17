@@ -63,6 +63,7 @@ from app.tools.shell import run_shell_command
 from app.tools.web import web_fetch, web_search
 from app.tools.telegram_tools import save_draft, schedule_message, telegram_ask, telegram_send, telegram_send_file
 from app.tools.skills import read_skill
+from app.tools.rag import rag_ingest, rag_search
 from app.mcp.loader import load_active_mcp_tools
 
 # ---------------------------------------------------------------------------
@@ -143,6 +144,8 @@ WORKER_TOOLS = [
     schedule_message,
     telegram_send_file,
     read_skill,
+    rag_ingest,
+    rag_search,
 ]
 
 _TOOL_MAP: dict[str, Any] = {t.name: t for t in WORKER_TOOLS}
@@ -268,6 +271,23 @@ Drive      : drive_list, drive_read, drive_write, drive_download, drive_upload
 Calendar   : calendar_list_events, calendar_create_event
 Telegram   : telegram_send, telegram_ask, save_draft, schedule_message, telegram_send_file
 Skills     : read_skill  (call when a skill from the SKILLS section is relevant)
+RAG        : rag_ingest, rag_search  (vector search over local files)
+
+━━━ RAG RULES ━━━
+Use rag_ingest + rag_search when:
+- Finding/locating something across multiple files ("which file mentions X", "does any file talk about Y")
+- Answering a specific question from a large file (don't need full content, just the relevant part)
+- Semantic search across files ("find content related to neural networks")
+- Cross-file topic comparison ("how do these files differ on topic X")
+
+Use read_file directly when:
+- Full extraction needed ("give me all questions/headings from this file")
+- Summarizing an entire file (needs full content)
+- File is small (under ~5KB) — cheaper and more accurate to read directly
+- Structured data files (CSV, JSON) — use csv_analyze skill or read directly
+- Code files where full context matters
+
+Workflow: rag_ingest(paths) first to ensure files are indexed, then rag_search(query, paths).
 
 ━━━ DRIVE RULES ━━━
 - To download a file: ALWAYS call drive_list first to get the real file_id. Never guess it.
@@ -622,6 +642,8 @@ SUPERVISOR_TOOLS = [
     schedule_message,
     telegram_send_file,
     read_skill,
+    rag_ingest,
+    rag_search,
     spawn_workers_tool,
 ]
 
@@ -799,7 +821,7 @@ async def policy_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             continue
 
         try:
-            result = await t.ainvoke(tool_args)
+            result = await t.ainvoke(tool_args, config=config)
             tool_messages.append(ToolMessage(tool_call_id=tool_call_id, content=str(result)))
         except Exception as exc:
             tool_messages.append(

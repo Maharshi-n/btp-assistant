@@ -284,10 +284,16 @@ async def _fire_reminder(chat_id: str, token: str | None, message: str) -> None:
     """Fire a one-shot reminder by running the agent with the reminder text as the prompt.
 
     Creates a new thread, runs the supervisor, sends the result to Telegram.
+    Does NOT register a pending reply or call telegram_ask — reminders are
+    one-shot notifications. The user can /switch to the thread to follow up.
     Falls back to a plain text reminder if the agent run fails.
     """
     if not token:
         return
+
+    thread_id: int = 0
+    reply: str = f"Reminder: {message}"
+
     try:
         async with AsyncSessionLocal() as db:
             thread = Thread(title=f"Reminder: {message[:50]}", model="gpt-4o-mini")
@@ -296,26 +302,26 @@ async def _fire_reminder(chat_id: str, token: str | None, message: str) -> None:
             await db.refresh(thread)
             thread_id = thread.id
 
-        tagged = f"[via Telegram] [Reminder triggered] {message}"
+        # Instruct the agent to produce a result only — no follow-up questions,
+        # no telegram_ask calls. The user can /switch to this thread to continue.
+        tagged = (
+            f"[via Telegram] [Reminder triggered — respond with result only, "
+            f"do NOT call telegram_ask or ask follow-up questions] {message}"
+        )
         result_text = await _run_direct_thread(tagged, thread_id)
-        reply = _smart_truncate(result_text) if result_text and result_text != "Done." else f"Reminder: {message}"
+        if result_text and result_text != "Done.":
+            reply = _smart_truncate(result_text)
     except Exception as exc:
         logger.warning("_fire_reminder: agent run failed: %s", exc)
-        reply = f"Reminder: {message}"
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
+            # Send result + thread ID so user can /switch to follow up
+            notification = f"{reply}\n\n[Thread #{thread_id} — /switch {thread_id} to follow up]"
             await client.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": chat_id, "text": reply},
+                json={"chat_id": chat_id, "text": notification},
             )
-            if reply != f"Reminder: {message}":
-                # Re-register pending so the user can follow up
-                await _register_pending_reply(chat_id, thread_id, conversation_id=None)
-                await client.post(
-                    f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": chat_id, "text": "..."},
-                )
     except Exception as exc:
         logger.warning("_fire_reminder: failed to send result: %s", exc)
 

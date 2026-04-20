@@ -13,31 +13,82 @@ from langchain_core.tools import tool
 
 import app.config as app_config
 
+from sqlalchemy import select as sa_select
+from app.db.engine import SyncSessionLocal
+from app.db.models import WorkspaceLocation
+
+
+def _get_allowed_roots() -> list[tuple[Path, bool]]:
+    """Return [(resolved_path, writable), ...] for all workspace locations.
+
+    Primary location is always first in the list.
+    """
+    try:
+        with SyncSessionLocal() as db:
+            rows = db.execute(
+                sa_select(WorkspaceLocation).order_by(
+                    WorkspaceLocation.is_primary.desc(),
+                    WorkspaceLocation.created_at
+                )
+            ).scalars().all()
+        if rows:
+            return [(Path(os.path.realpath(r.path)), r.writable) for r in rows]
+    except Exception:
+        pass
+    # Fallback: use app_config.WORKSPACE_DIR if DB is unavailable
+    return [(Path(os.path.realpath(str(app_config.WORKSPACE_DIR))), True)]
+
 
 class OutsideWorkspaceError(ValueError):
     """Raised when a path falls outside the allowed workspace directory."""
 
 
-def _safe_resolve(path_str: str) -> Path:
-    """Resolve *path_str* relative to WORKSPACE_DIR and verify it stays inside.
+def _safe_resolve(path_str: str, require_writable: bool = False) -> Path:
+    """Resolve *path_str* and verify it falls inside an allowed workspace location.
 
-    Raises OutsideWorkspaceError if the resolved path escapes the workspace.
+    If *require_writable* is True and the matching location is read-only,
+    raises OutsideWorkspaceError.
     """
-    workspace = app_config.WORKSPACE_DIR
-    # Treat relative paths as relative to workspace
+    if not path_str or not isinstance(path_str, str):
+        raise OutsideWorkspaceError("Empty or invalid path.")
+
+    if path_str.startswith("\\\\") or path_str.startswith("//"):
+        raise OutsideWorkspaceError("UNC paths are not allowed.")
+    if path_str.startswith("\\\\?\\") or path_str.startswith("\\\\.\\"):
+        raise OutsideWorkspaceError("Device / extended-length paths are not allowed.")
+    if ":" in path_str[2:]:
+        raise OutsideWorkspaceError("Alternate data streams are not allowed.")
+
+    roots = _get_allowed_roots()
+    # Use primary root for relative-path resolution
+    primary_root = roots[0][0]
+
     candidate = Path(path_str)
     if not candidate.is_absolute():
-        candidate = workspace / candidate
-    resolved = candidate.resolve()
-    # Ensure it's inside (or equal to) the workspace
+        candidate = primary_root / candidate
+
     try:
-        resolved.relative_to(workspace)
-    except ValueError:
-        raise OutsideWorkspaceError(
-            f"Path '{path_str}' is outside the allowed workspace '{workspace}'. "
-            "I can only access files inside the workspace directory."
-        )
-    return resolved
+        resolved = Path(os.path.realpath(str(candidate)))
+    except OSError as e:
+        raise OutsideWorkspaceError(f"Could not resolve path '{path_str}': {e}")
+
+    for root_path, writable in roots:
+        try:
+            resolved.relative_to(root_path)
+        except ValueError:
+            continue
+        # Path is inside this root
+        if require_writable and not writable:
+            raise OutsideWorkspaceError(
+                f"'{path_str}' is in a read-only workspace location '{root_path}'. "
+                "This location is read-only and cannot be written to."
+            )
+        return resolved
+
+    raise OutsideWorkspaceError(
+        f"Path '{path_str}' is outside all allowed workspace locations. "
+        "I can only access files inside configured workspace directories."
+    )
 
 
 def _read_docx(path: Path) -> str:
@@ -169,7 +220,7 @@ def write_file(
 ) -> str:
     """Write content to a file inside the workspace directory. Creates the file if it does not exist."""
     try:
-        resolved = _safe_resolve(path)
+        resolved = _safe_resolve(path, require_writable=True)
     except OutsideWorkspaceError as e:
         return str(e)
 
@@ -217,7 +268,7 @@ def list_dir(path: Annotated[str, "Directory path to list (relative to workspace
 def create_folder(path: Annotated[str, "Path of the folder to create (relative to workspace or absolute)"]) -> str:
     """Create a folder (directory) inside the workspace directory. Creates all intermediate directories as needed."""
     try:
-        resolved = _safe_resolve(path)
+        resolved = _safe_resolve(path, require_writable=True)
     except OutsideWorkspaceError as e:
         return str(e)
 
@@ -232,7 +283,7 @@ def create_folder(path: Annotated[str, "Path of the folder to create (relative t
 def delete_file(path: Annotated[str, "Path to the file to delete (relative to workspace or absolute)"]) -> str:
     """Delete a file inside the workspace directory. Directories are not deleted by this tool."""
     try:
-        resolved = _safe_resolve(path)
+        resolved = _safe_resolve(path, require_writable=True)
     except OutsideWorkspaceError as e:
         return str(e)
 
@@ -259,7 +310,7 @@ def copy_file(
     import shutil
     try:
         src_resolved = _safe_resolve(src)
-        dst_resolved = _safe_resolve(dst)
+        dst_resolved = _safe_resolve(dst, require_writable=True)
     except OutsideWorkspaceError as e:
         return str(e)
 
@@ -291,8 +342,8 @@ def move_file(
     Creates destination directories as needed."""
     import shutil
     try:
-        src_resolved = _safe_resolve(src)
-        dst_resolved = _safe_resolve(dst)
+        src_resolved = _safe_resolve(src, require_writable=True)
+        dst_resolved = _safe_resolve(dst, require_writable=True)
     except OutsideWorkspaceError as e:
         return str(e)
 
@@ -311,3 +362,34 @@ def move_file(
         return f"Moved '{src}' → '{dst_resolved.relative_to(app_config.WORKSPACE_DIR)}'."
     except OSError as e:
         return f"Error moving file: {e}"
+
+
+@tool
+def find_file(
+    filename: Annotated[str, "Filename to search for (e.g. 'resume.pdf'). Case-insensitive on Windows."],
+) -> str:
+    """Search for a file by name across all workspace locations.
+    Searches the primary workspace first, then secondary locations in order added.
+    Returns the full path and which workspace it was found in, or a not-found message.
+    """
+    roots = _get_allowed_roots()
+    filename_lower = filename.lower()
+    results: list[str] = []
+
+    for root_path, _writable in roots:
+        if not root_path.exists():
+            continue
+        for dirpath, _dirs, files in os.walk(str(root_path)):
+            for fname in files:
+                if fname.lower() == filename_lower:
+                    full = Path(dirpath) / fname
+                    results.append(str(full))
+
+    if not results:
+        return f"File '{filename}' not found in any workspace location."
+    if len(results) == 1:
+        return f"Found: {results[0]}"
+    lines = [f"Found {len(results)} matches:"]
+    for p in results:
+        lines.append(f"  {p}")
+    return "\n".join(lines)

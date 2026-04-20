@@ -5,6 +5,7 @@ Paths outside the workspace raise OutsideWorkspaceError.
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Annotated
@@ -16,6 +17,8 @@ import app.config as app_config
 from sqlalchemy import select as sa_select
 from app.db.engine import SyncSessionLocal
 from app.db.models import WorkspaceLocation
+
+_logger = logging.getLogger(__name__)
 
 
 def _get_allowed_roots() -> list[tuple[Path, bool]]:
@@ -33,8 +36,8 @@ def _get_allowed_roots() -> list[tuple[Path, bool]]:
             ).scalars().all()
         if rows:
             return [(Path(os.path.realpath(r.path)), r.writable) for r in rows]
-    except Exception:
-        pass
+    except Exception as e:
+        _logger.warning("Could not load workspace roots from DB: %s", e)
     # Fallback: use app_config.WORKSPACE_DIR if DB is unavailable
     return [(Path(os.path.realpath(str(app_config.WORKSPACE_DIR))), True)]
 
@@ -327,7 +330,7 @@ def copy_file(
 
     try:
         shutil.copy2(str(src_resolved), str(dst_resolved))
-        return f"Copied '{src}' → '{dst_resolved.relative_to(app_config.WORKSPACE_DIR)}'."
+        return f"Copied '{src}' → '{dst_resolved}'."
     except OSError as e:
         return f"Error copying file: {e}"
 
@@ -359,7 +362,7 @@ def move_file(
 
     try:
         shutil.move(str(src_resolved), str(dst_resolved))
-        return f"Moved '{src}' → '{dst_resolved.relative_to(app_config.WORKSPACE_DIR)}'."
+        return f"Moved '{src}' → '{dst_resolved}'."
     except OSError as e:
         return f"Error moving file: {e}"
 
@@ -370,10 +373,12 @@ def find_file(
 ) -> str:
     """Search for a file by name across all workspace locations.
     Searches the primary workspace first, then secondary locations in order added.
-    Returns the full path and which workspace it was found in, or a not-found message.
+    Returns the full path(s) if found.
     """
     roots = _get_allowed_roots()
     filename_lower = filename.lower()
+    if "/" in filename or "\\" in filename:
+        return f"Error: filename should be a bare filename (e.g. 'resume.pdf'), not a path. Got: '{filename}'"
     results: list[str] = []
 
     for root_path, _writable in roots:

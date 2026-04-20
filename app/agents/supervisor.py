@@ -33,10 +33,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, TypedDict
+
+logger = logging.getLogger(__name__)
 
 from langchain_core.messages import (
     AIMessage,
@@ -48,20 +51,19 @@ from langchain_core.messages import (
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from psycopg import AsyncConnection
-from psycopg.rows import dict_row
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command, interrupt
 
 import app.config as app_config
 from app.permissions.policy import get_decision, human_readable_prompt
-from app.tools.filesystem import copy_file, create_folder, delete_file, list_dir, move_file, read_file, write_file
+from app.tools.filesystem import copy_file, create_folder, delete_file, find_file, list_dir, move_file, read_file, write_file
 from app.tools.google_tools import GOOGLE_TOOLS
 from app.tools.shell import run_shell_command
 from app.tools.web import web_fetch, web_search
 from app.tools.telegram_tools import save_draft, schedule_message, telegram_ask, telegram_send, telegram_send_file
+from app.tools.image import generate_image
 from app.tools.skills import read_skill
 from app.tools.rag import rag_ingest, rag_search
 from app.mcp.loader import load_active_mcp_tools
@@ -132,6 +134,7 @@ WORKER_TOOLS = [
     copy_file,
     move_file,
     create_folder,
+    find_file,
     list_dir,
     delete_file,
     run_shell_command,
@@ -262,14 +265,23 @@ Do not say "I can help with that" — just do it.
 When a task is done, give a short, direct summary of what you did.
 
 ━━━ TOOLS AVAILABLE ━━━
-Filesystem : read_file, write_file, copy_file, move_file, create_folder, list_dir, delete_file  (workspace-scoped)
+Filesystem : read_file, write_file, copy_file, move_file, create_folder, find_file, list_dir, delete_file  (workspace-scoped)
            copy_file/move_file preserve binary content — use these for images, PDFs, and any non-text files
-Shell      : run_shell_command  (safe allowlist only)
+Shell      : run_shell_command  (any command — ask before destructive actions like rm, drop db, force push, kill)
+           For installing software: try winget first: winget install <AppName>
+           If winget fails, use browser (see Playwright below).
+Browser    : mcp__playwright__browser_navigate/screenshot/click/type/snapshot/scroll/close
+           SCREENSHOTS: after browser_take_screenshot the system auto-saves the PNG to
+           D:\\screenshots\\<filename>.png — the returned tool result contains the exact
+           path. Use that returned path verbatim in telegram_send_file. Do NOT call
+           copy_file. Do NOT invent paths starting with '@'.
+           Always read_skill("mcp_playwright") before any browser task.
 Web        : web_search, web_fetch
 Gmail      : gmail_list_unread, gmail_read, gmail_search, gmail_send
 Drive      : drive_list, drive_read, drive_write, drive_download, drive_upload
 Calendar   : calendar_list_events, calendar_create_event
 Telegram   : telegram_send, telegram_ask, save_draft, schedule_message, telegram_send_file
+Images     : generate_image  (DALL-E 3, saves to workspace/images/, $0.04/image)
 Skills     : read_skill  (call when a skill from the SKILLS section is relevant)
 RAG        : rag_ingest, rag_search  (vector search over local files)
 
@@ -327,6 +339,7 @@ Messages tagged [via Telegram] come from the user's phone.
 For short conversational replies (status updates, confirmations, quick answers) — keep it brief and plain text, no markdown tables or heavy formatting.
 For anything the user asked you to create or produce (drafts, documents, lists, code, analysis) — deliver it in full, with normal formatting, without shortening or summarising.
 The tag is silent context only. Do not mention Telegram or acknowledge the channel.
+CRITICAL: When replying to a [via Telegram] message, respond DIRECTLY with your answer — do NOT call telegram_send. The system handles delivery automatically. telegram_send is ONLY for proactive notifications (automations, reminders, unprompted alerts). Never call telegram_send as a response to a user message.
 
 ━━━ AUTOMATION RUNS ━━━
 When triggered by an automation (cron job, email, file event), the trigger context
@@ -344,14 +357,34 @@ RIGHT: [actually invoke telegram_ask tool with the draft text in the question ar
 This rule is absolute. Every tool mentioned in your instructions must be called, not described.
 
 ━━━ MULTI-AGENT ORCHESTRATION ━━━
-Use spawn_workers ONLY when a task has genuinely independent parallel sub-tasks
-(e.g. 3 separate web searches, processing 3 different files simultaneously).
-Each worker needs:
-  - "task_description": clear, self-contained instruction
-  - "tools_allowed": list of tools it may use
+Spawn workers ONLY for these exact patterns — no others:
 
-Call spawn_workers ONCE with ALL workers. Workers cannot spawn sub-workers.
-For simple or sequential tasks, use tools directly — do not over-parallelise."""
+  PATTERN 1 — Multiple recipients, same content
+    Condition: sending the same content to N≥2 recipients (email, Telegram, etc.)
+    Action: YOU prepare the content first, then spawn one worker per recipient.
+    Example: "email summary to A, B, C" → you write summary → spawn 3 workers each with gmail_send
+
+  PATTERN 2 — Multiple independent deliveries after a single result
+    Condition: you have a finished result AND N≥2 independent delivery tasks
+    (e.g. save to file + send email + send Telegram)
+    Action: spawn one worker per delivery, give each the exact content to deliver.
+    Example: "store summary as txt AND email it AND send to Telegram" → spawn 3 workers
+
+  PATTERN 3 — Search/read N≥4 files independently
+    Condition: user asks to read, analyze, or extract from 4+ separate files where
+    each file's result is independent (not building on previous results)
+    Action: spawn one worker per file or batch of 3 files.
+    NOTE: for RAG (rag_ingest + rag_search), do NOT spawn workers — call RAG tools directly.
+
+In ALL other cases, do the work yourself sequentially. Do not invent parallelism.
+
+Worker rules:
+  - YOU handle all thinking, summarizing, and personalizing BEFORE spawning.
+  - Workers only do pure execution (send, save, fetch, read). No reasoning needed from them.
+  - Give each worker a self-contained task_description with the exact content — no ambiguity.
+  - Always list the exact tools_allowed each worker needs (e.g. ["gmail_send"]).
+  - Call spawn_workers ONCE with ALL workers in a single call.
+  - Workers cannot spawn sub-workers."""
 
 
 def _worker_system_prompt(task_description: str, tools_allowed: list[str]) -> str:
@@ -376,6 +409,333 @@ Rules:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# Screenshot auto-relocation: Playwright MCP saves PNGs into
+# <project>/.playwright-mcp/ (hardcoded by the server). We intercept the tool
+# result, move the file into D:\screenshots\, and rewrite the ToolMessage so
+# the agent only ever sees the final workspace path.
+import re as _re
+import shutil as _shutil
+from pathlib import Path as _Path
+
+_SCREENSHOT_DST_DIR = _Path(r"D:\screenshots")
+# Match Windows absolute paths that pass through ".playwright-mcp" and end in
+# .png. Allow spaces/most characters in intermediate segments, but stop at
+# quotes, angle brackets, pipes, or a newline — things that can't appear in a
+# real path. We anchor on the ".playwright-mcp" literal so we don't grab random
+# unrelated paths.
+_PLAYWRIGHT_PATH_RE = _re.compile(
+    r"([A-Za-z]:[\\/][^\r\n\"'<>|*?]*?\.playwright-mcp[\\/][^\r\n\"'<>|*?]+?\.png)",
+    _re.IGNORECASE,
+)
+
+# Generic filename extracted from a Playwright result that only mentions the
+# basename ("saved to mrbeast_video.png"). We search likely dump dirs for a
+# matching file created very recently.
+_BARE_PNG_RE = _re.compile(r"([A-Za-z0-9_\-\. ]+\.png)", _re.IGNORECASE)
+
+# Directories Playwright / MCP servers have been observed dumping PNGs into.
+# We scan these after any screenshot call to catch stragglers that our path
+# regex missed.
+_PROJECT_ROOT = _Path(__file__).resolve().parent.parent.parent
+_SCREENSHOT_SCAN_DIRS = (
+    _PROJECT_ROOT,
+    _PROJECT_ROOT / ".playwright-mcp",
+    _Path.cwd(),
+)
+
+
+_PLAYWRIGHT_DEAD_SESSION_RE = _re.compile(
+    r"Target page, context or browser has been closed", _re.IGNORECASE
+)
+
+
+def _annotate_playwright_error(tool_name: str, result_str: str) -> str:
+    """If a Playwright tool reports a dead-session error, append a recovery
+    hint so the agent knows to call browser_close first (instead of retrying
+    the same call forever)."""
+    if not tool_name.startswith("mcp__playwright__"):
+        return result_str
+    if tool_name == "mcp__playwright__browser_close":
+        return result_str
+    if not _PLAYWRIGHT_DEAD_SESSION_RE.search(result_str):
+        return result_str
+    return (
+        result_str
+        + "\n\n[System hint: the Playwright browser session died. "
+        "Call mcp__playwright__browser_close, then retry browser_navigate ONCE. "
+        "Do not retry the failing tool more than twice.]"
+    )
+
+
+def _move_one_screenshot(src: _Path) -> _Path | None:
+    """Copy src into the screenshots dir, delete source, return new path."""
+    try:
+        _SCREENSHOT_DST_DIR.mkdir(parents=True, exist_ok=True)
+        dst = _SCREENSHOT_DST_DIR / src.name
+        if dst.exists():
+            stem, suffix = dst.stem, dst.suffix
+            for i in range(1, 1000):
+                candidate = _SCREENSHOT_DST_DIR / f"{stem}_{i}{suffix}"
+                if not candidate.exists():
+                    dst = candidate
+                    break
+        _shutil.copy2(str(src), str(dst))
+        try:
+            src.unlink()
+        except OSError:
+            pass
+        logger.info("Screenshot relocated: %s -> %s", src, dst)
+        return dst
+    except Exception as exc:
+        logger.warning("Screenshot move failed (%s): %s", src, exc)
+        return None
+
+
+# Known legitimate files in the project root — never touched by the sweep.
+_PROJECT_ROOT_WHITELIST = {
+    "CLAUDE.md", "README.md", "planchat.txt", "requirements.txt",
+    ".env", ".env.example", ".gitignore", "run.py", "app.db",
+}
+
+
+def _sweep_playwright_artifacts() -> None:
+    """Remove stray .md / .yml / .yaml / .png files Playwright MCP dumps into
+    the project root (browser_snapshot writes markdown accessibility trees,
+    some tools write yaml configs). Whitelist protects real project files.
+    Safe to call after any Playwright tool invocation."""
+    try:
+        import time as _time
+        now = _time.time()
+        for p in _PROJECT_ROOT.iterdir():
+            if not p.is_file():
+                continue
+            if p.name in _PROJECT_ROOT_WHITELIST:
+                continue
+            if p.suffix.lower() not in (".md", ".yml", ".yaml"):
+                continue
+            try:
+                if now - p.stat().st_mtime > 120:
+                    continue  # only sweep recent dumps
+                p.unlink()
+                logger.info("Swept stray Playwright artifact: %s", p.name)
+            except OSError:
+                pass
+    except Exception as exc:
+        logger.warning("Playwright artifact sweep failed: %s", exc)
+
+
+def _relocate_playwright_screenshot(result_str: str) -> str:
+    """Find a screenshot PNG the tool just created and move it to
+    D:\\screenshots\\. Tries three strategies:
+      1. Explicit .playwright-mcp\\...\\foo.png path in the result.
+      2. Bare "foo.png" filename — scan likely dump dirs for it.
+      3. Fallback: newest .png under 30s old in scan dirs.
+    On success, rewrites the tool result to reference the new path so the
+    agent cannot reference the temp path. Input is returned unchanged on
+    total failure.
+    """
+    try:
+        # Strategy 1: explicit full path in the result
+        match = _PLAYWRIGHT_PATH_RE.search(result_str)
+        if match:
+            src = _Path(match.group(1))
+            if src.exists() and src.is_file():
+                dst = _move_one_screenshot(src)
+                if dst:
+                    return f"Screenshot saved to {dst}. Use telegram_send_file(\"{dst}\") to deliver it."
+
+        # Strategy 2: bare filename in the result
+        bare_match = _BARE_PNG_RE.search(result_str)
+        if bare_match:
+            fname = bare_match.group(1).strip()
+            for d in _SCREENSHOT_SCAN_DIRS:
+                cand = d / fname
+                if cand.exists() and cand.is_file() and cand.resolve() != _SCREENSHOT_DST_DIR.resolve() / fname:
+                    # Skip files already in the destination
+                    try:
+                        cand.resolve().relative_to(_SCREENSHOT_DST_DIR.resolve())
+                        continue  # already in dst
+                    except ValueError:
+                        pass
+                    dst = _move_one_screenshot(cand)
+                    if dst:
+                        return f"Screenshot saved to {dst}. Use telegram_send_file(\"{dst}\") to deliver it."
+
+        # Strategy 3: newest .png created in the last 30 seconds in any scan dir
+        import time as _time
+        now = _time.time()
+        newest: _Path | None = None
+        newest_mtime = 0.0
+        for d in _SCREENSHOT_SCAN_DIRS:
+            if not d.exists():
+                continue
+            try:
+                for p in d.iterdir():
+                    if not p.is_file() or p.suffix.lower() != ".png":
+                        continue
+                    try:
+                        p.resolve().relative_to(_SCREENSHOT_DST_DIR.resolve())
+                        continue  # skip files already in dst
+                    except ValueError:
+                        pass
+                    mt = p.stat().st_mtime
+                    if now - mt > 30:
+                        continue
+                    if mt > newest_mtime:
+                        newest_mtime = mt
+                        newest = p
+            except OSError:
+                continue
+        if newest:
+            dst = _move_one_screenshot(newest)
+            if dst:
+                return f"Screenshot saved to {dst}. Use telegram_send_file(\"{dst}\") to deliver it."
+
+        return result_str
+    except Exception as exc:
+        logger.warning("Screenshot relocation failed: %s", exc)
+        return result_str
+
+
+_ERROR_MARKERS = ("MCP tool error", "Tool error:", "Tool timed out", "Error:")
+
+
+async def _ainvoke_with_retry(runnable, payload, *, attempts: int = 3):
+    """Invoke an LLM runnable with retry on transient errors (429 / 5xx / network).
+
+    Backoff: 1s, 3s. Does not retry on 400 (bad request / schema violation),
+    which is a bug to fix, not a flaky call.
+    """
+    import asyncio as _asyncio
+    delays = [1.0, 3.0]
+    last_exc: Exception | None = None
+    for i in range(attempts):
+        try:
+            return await runnable.ainvoke(payload)
+        except Exception as exc:
+            msg = str(exc)
+            name = type(exc).__name__
+            transient = (
+                "RateLimit" in name
+                or "APIConnection" in name
+                or "APITimeout" in name
+                or "ServiceUnavailable" in name
+                or " 429" in msg or " 500" in msg or " 502" in msg
+                or " 503" in msg or " 504" in msg
+            )
+            if not transient or i == attempts - 1:
+                raise
+            last_exc = exc
+            logger.warning("LLM transient error (attempt %d/%d): %s", i + 1, attempts, exc)
+            await _asyncio.sleep(delays[min(i, len(delays) - 1)])
+    if last_exc:
+        raise last_exc
+
+
+def _detect_stuck_loop(messages: list[BaseMessage]) -> str | None:
+    """Return a stop message if the same tool has failed N times in a row.
+
+    Walks backward through the last few AIMessage+ToolMessage pairs. If the
+    same tool name shows up with an error-prefixed result 3+ times in a row,
+    we refuse to let the supervisor dispatch another call and return a
+    terminal message for the user.
+
+    The LLM can't be trusted to cap retries on its own — LLMs are stubborn
+    when they think a retry will work. This breaks the loop in code.
+    """
+    # Collect the sequence of (tool_name, is_error) for recent tool calls,
+    # newest first. Walk backward: for each AIMessage with tool_calls, pair
+    # it with the following ToolMessage(s).
+    recent: list[tuple[str, bool]] = []
+    # Build a map of tool_call_id -> ToolMessage content to match pairs
+    tc_results: dict[str, str] = {}
+    for m in messages:
+        if isinstance(m, ToolMessage):
+            tc_results[m.tool_call_id] = str(getattr(m, "content", "") or "")
+
+    # Collect (tool_name, content) for each completed call, in order
+    completed: list[tuple[str, str]] = []
+    for m in messages:
+        if isinstance(m, AIMessage):
+            for tc in getattr(m, "tool_calls", None) or []:
+                result = tc_results.get(tc["id"])
+                if result is None:
+                    continue
+                completed.append((tc["name"], result))
+
+    if len(completed) < 3:
+        return None
+
+    # Check the last 3 calls — same-tool-repeat
+    last3 = completed[-3:]
+    names = {n for n, _ in last3}
+    all_errors_3 = all(any(marker in r for marker in _ERROR_MARKERS) for _, r in last3)
+
+    if len(names) == 1 and all_errors_3:
+        tool_name = last3[0][0]
+        last_err = last3[-1][1]
+        err_summary = last_err[:250].replace("\n", " ")
+        return (
+            f"Gave up after 3 failed attempts of {tool_name}. "
+            f"Last error: {err_summary}\n\n"
+            "Tell the user concisely what failed (one sentence) and ask if they "
+            "want you to try a different approach. Do NOT call any tool in your "
+            "next response — just reply in plain text."
+        )
+
+    # Alternating-tools-same-error: last 5 calls all errored, any mix of tools.
+    if len(completed) >= 5:
+        last5 = completed[-5:]
+        if all(any(marker in r for marker in _ERROR_MARKERS) for _, r in last5):
+            err_summary = last5[-1][1][:250].replace("\n", " ")
+            return (
+                "Gave up after 5 consecutive tool failures. "
+                f"Last error: {err_summary}\n\n"
+                "Tell the user concisely what failed and ask if they want a "
+                "different approach. Do NOT call any tool in your next response — "
+                "just reply in plain text."
+            )
+
+    return None
+
+
+def _heal_dangling_tool_calls(messages: list[BaseMessage]) -> None:
+    """Fix broken message history in-place by injecting synthetic ToolMessages.
+
+    If an AIMessage with tool_calls exists but some tool_call_ids have no
+    corresponding ToolMessage response, OpenAI returns a 400 error. This
+    function finds those gaps and fills them so the thread can continue.
+    """
+    responded_ids: set[str] = set()
+    for m in messages:
+        if isinstance(m, ToolMessage):
+            responded_ids.add(m.tool_call_id)
+
+    for i, m in enumerate(messages):
+        if not isinstance(m, AIMessage):
+            continue
+        tool_calls = getattr(m, "tool_calls", None) or []
+        missing = [tc for tc in tool_calls if tc["id"] not in responded_ids]
+        if not missing:
+            continue
+        # Insert synthetic ToolMessages right after this AIMessage
+        synthetic = [
+            ToolMessage(
+                tool_call_id=tc["id"],
+                content="[Tool call interrupted — result unavailable. Please retry if needed.]",
+            )
+            for tc in missing
+        ]
+        insert_at = i + 1
+        for j, sm in enumerate(synthetic):
+            messages.insert(insert_at + j, sm)
+            responded_ids.add(sm.tool_call_id)
+        logger.warning(
+            "_heal_dangling_tool_calls: injected %d synthetic ToolMessages for %s",
+            len(synthetic), [tc["name"] for tc in missing],
+        )
+
 
 def _check_bounds(ctx: RunContext) -> str | None:
     """Return an error string if any bound is exceeded, else None."""
@@ -431,9 +791,35 @@ async def _worker_node(state: AgentState, config: RunnableConfig) -> dict:
     if len(worker_messages) > _WINDOW:
         non_sys = [m for m in worker_messages if not isinstance(m, SystemMessage)]
         sys_msgs = [m for m in worker_messages if isinstance(m, SystemMessage)]
-        worker_messages = sys_msgs + non_sys[-_WINDOW:]
+        # Preserve the last HumanMessage across windowing (same fix as supervisor).
+        last_human_idx = next(
+            (i for i in range(len(non_sys) - 1, -1, -1) if isinstance(non_sys[i], HumanMessage)),
+            None,
+        )
+        windowed = non_sys[-_WINDOW:]
+        if last_human_idx is not None and not any(m is non_sys[last_human_idx] for m in windowed):
+            windowed = [non_sys[last_human_idx]] + windowed
+        worker_messages = sys_msgs + windowed
 
-    response: BaseMessage = await llm_with_tools.ainvoke(worker_messages)
+    # Drop only truly orphaned ToolMessages (whose AIMessage parent is gone).
+    # Valid AIMessage+ToolMessage groups without a preceding HumanMessage are
+    # still legal for OpenAI — do not strip them.
+    sys_msgs = [m for m in worker_messages if isinstance(m, SystemMessage)]
+    non_sys_part = [m for m in worker_messages if not isinstance(m, SystemMessage)]
+    while non_sys_part and isinstance(non_sys_part[0], ToolMessage):
+        non_sys_part.pop(0)
+    known_tc_ids: set[str] = set()
+    for m in non_sys_part:
+        if isinstance(m, AIMessage):
+            for tc in getattr(m, "tool_calls", None) or []:
+                known_tc_ids.add(tc["id"])
+    non_sys_part = [
+        m for m in non_sys_part
+        if not (isinstance(m, ToolMessage) and m.tool_call_id not in known_tc_ids)
+    ]
+    worker_messages = sys_msgs + non_sys_part
+
+    response: BaseMessage = await _ainvoke_with_retry(llm_with_tools, worker_messages)
 
     # Emit WS event for worker node activity
     try:
@@ -515,6 +901,10 @@ async def _worker_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             })
 
             user_decision: str = user_response.get("decision", "denied")
+            logger.info(
+                "Permission resume: tool=%s decision=%s thread=%s",
+                tool_name, user_decision, thread_id,
+            )
 
             await _log_audit(
                 tool_name=tool_name,
@@ -556,9 +946,17 @@ async def _worker_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             continue
 
         try:
-            result = await t.ainvoke(tool_args)
+            result = await asyncio.wait_for(
+                t.ainvoke(tool_args),
+                timeout=120.0,
+            )
 
             result_str = str(result)
+            if tool_name == "mcp__playwright__browser_take_screenshot":
+                result_str = _relocate_playwright_screenshot(result_str)
+            if tool_name.startswith("mcp__playwright__"):
+                _sweep_playwright_artifacts()
+            result_str = _annotate_playwright_error(tool_name, result_str)
             tool_messages.append(ToolMessage(tool_call_id=tool_call_id, content=result_str))
 
             # Emit tool result
@@ -573,6 +971,10 @@ async def _worker_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             except Exception:
                 pass
 
+        except asyncio.TimeoutError:
+            tool_messages.append(
+                ToolMessage(tool_call_id=tool_call_id, content=f"Tool timed out after 60s: {tool_name}")
+            )
         except Exception as exc:
             tool_messages.append(
                 ToolMessage(tool_call_id=tool_call_id, content=f"Tool error: {exc}")
@@ -630,6 +1032,7 @@ SUPERVISOR_TOOLS = [
     copy_file,
     move_file,
     create_folder,
+    find_file,
     list_dir,
     delete_file,
     run_shell_command,
@@ -641,6 +1044,7 @@ SUPERVISOR_TOOLS = [
     save_draft,
     schedule_message,
     telegram_send_file,
+    generate_image,
     read_skill,
     rag_ingest,
     rag_search,
@@ -719,18 +1123,90 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
     skills_block = await _load_skills_index()
     messages = list(state["messages"])
 
-    # Sliding window: keep system message + last 20 messages to cap token usage.
-    # This covers ~10 user/assistant turns which is enough for any single task.
+    logger.debug(
+        "supervisor_node: raw state has %d messages: %s",
+        len(messages),
+        [(type(m).__name__, getattr(m, "tool_calls", None) and "has_tc" or str(m.content)[:60]) for m in messages],
+    )
+
+    # Sliding window: keep system message + last ~20 messages to cap token usage.
+    # CRITICAL: always preserve the most recent HumanMessage (the current turn's
+    # user input) even if it would otherwise be trimmed out of the window.
+    # Losing it causes the "Could you please repeat your last request?" bug
+    # because the supervisor has AI/Tool messages but no user ask to answer.
     _WINDOW = 20
     if len(messages) > _WINDOW:
-        # Strip any leading SystemMessage before windowing
         non_system = [m for m in messages if not isinstance(m, SystemMessage)]
-        messages = non_system[-_WINDOW:]
+        last_human_idx = next(
+            (i for i in range(len(non_system) - 1, -1, -1) if isinstance(non_system[i], HumanMessage)),
+            None,
+        )
+        windowed = non_system[-_WINDOW:]
+        if (
+            last_human_idx is not None
+            and not any(m is non_system[last_human_idx] for m in windowed)
+        ):
+            # Prepend the last HumanMessage so the supervisor always sees what
+            # the user actually asked. Accept exceeding _WINDOW by 1 here.
+            windowed = [non_system[last_human_idx]] + windowed
+        messages = windowed
+
+    # Drop invalid sequences from the front of the window:
+    # - Orphan ToolMessages (their AIMessage+tool_calls parent is gone)
+    # OpenAI requires every ToolMessage to follow an AIMessage with matching
+    # tool_call_ids. An AIMessage+tool_calls group WITH its ToolMessages is
+    # valid even without a preceding HumanMessage — do not strip those.
+    before_strip = len(messages)
+    # Step 1: drop leading orphan ToolMessages (no matching AIMessage ahead of them).
+    known_tc_ids: set[str] = set()
+    while messages and isinstance(messages[0], ToolMessage):
+        if messages[0].tool_call_id in known_tc_ids:
+            break  # shouldn't happen but be safe
+        messages.pop(0)
+    # Step 2: collect tool_call_ids declared by AIMessages that remain.
+    for m in messages:
+        if isinstance(m, AIMessage):
+            for tc in getattr(m, "tool_calls", None) or []:
+                known_tc_ids.add(tc["id"])
+    # Step 3: drop any remaining ToolMessages whose tool_call_id is unknown.
+    messages = [
+        m for m in messages
+        if not (isinstance(m, ToolMessage) and m.tool_call_id not in known_tc_ids)
+    ]
+    if len(messages) != before_strip:
+        logger.warning(
+            "supervisor_node: stripped %d orphan tool messages, %d remain, first=%s",
+            before_strip - len(messages), len(messages),
+            type(messages[0]).__name__ if messages else "EMPTY",
+        )
+
+    # If stripping left no messages at all, the thread state is unrecoverable.
+    if not messages:
+        logger.warning("supervisor_node: no messages after strip — thread state corrupt, injecting recovery prompt")
+        messages = [HumanMessage(content="[System: previous message context was lost due to a state error. Please ask the user to repeat their last request.]")]
+    # If we still have AI/Tool messages but no HumanMessage in view, the window
+    # scrolled past the original user request. Inject a neutral continuation
+    # prompt instead of the recovery text (which causes the LLM to apologise
+    # and ask the user to repeat themselves).
+    elif not any(isinstance(m, HumanMessage) for m in messages):
+        logger.warning("supervisor_node: no HumanMessage in window — injecting continuation prompt")
+        messages = [HumanMessage(content="Continue with the task using the recent tool results above. Produce the final deliverable or the next required tool call.")] + messages
+
+    # Hard-stop if the same tool has failed 3+ times in a row — the LLM won't
+    # cap retries reliably on its own, and this is what produces the infinite
+    # loop that eventually hits LangGraph's recursion limit.
+    stop_notice = _detect_stuck_loop(messages)
+    if stop_notice is not None:
+        logger.warning("supervisor_node: stuck-loop detected — forcing stop")
+        messages = messages + [SystemMessage(content=stop_notice)]
 
     system = SystemMessage(content=_supervisor_system_prompt() + memories_block + skills_block)
     messages.insert(0, system)
 
-    response: BaseMessage = await llm_with_tools.ainvoke(messages)
+    # Heal any remaining dangling tool calls deeper in the history.
+    _heal_dangling_tool_calls(messages)
+
+    response: BaseMessage = await _ainvoke_with_retry(llm_with_tools, messages)
     return {"messages": [response], "run_context": ctx}
 
 
@@ -780,6 +1256,10 @@ async def policy_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             })
 
             user_decision: str = user_response.get("decision", "denied")
+            logger.info(
+                "Permission resume: tool=%s decision=%s thread=%s",
+                tool_name, user_decision, thread_id,
+            )
 
             await _log_audit(
                 tool_name=tool_name,
@@ -821,8 +1301,21 @@ async def policy_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             continue
 
         try:
-            result = await t.ainvoke(tool_args, config=config)
-            tool_messages.append(ToolMessage(tool_call_id=tool_call_id, content=str(result)))
+            result = await asyncio.wait_for(
+                t.ainvoke(tool_args, config=config),
+                timeout=120.0,
+            )
+            result_str = str(result)
+            if tool_name == "mcp__playwright__browser_take_screenshot":
+                result_str = _relocate_playwright_screenshot(result_str)
+            if tool_name.startswith("mcp__playwright__"):
+                _sweep_playwright_artifacts()
+            result_str = _annotate_playwright_error(tool_name, result_str)
+            tool_messages.append(ToolMessage(tool_call_id=tool_call_id, content=result_str))
+        except asyncio.TimeoutError:
+            tool_messages.append(
+                ToolMessage(tool_call_id=tool_call_id, content=f"Tool timed out after 60s: {tool_name}")
+            )
         except Exception as exc:
             tool_messages.append(
                 ToolMessage(tool_call_id=tool_call_id, content=f"MCP tool error ({tool_name}): {exc}")
@@ -1023,7 +1516,7 @@ async def _log_audit(
 # Main supervisor graph builder
 # ---------------------------------------------------------------------------
 
-def _build_graph(checkpointer: AsyncPostgresSaver) -> Any:
+def _build_graph(checkpointer: AsyncSqliteSaver) -> Any:
     builder: StateGraph = StateGraph(AgentState)
     builder.add_node("supervisor", supervisor_node)
     builder.add_node("tools", policy_tools_node)
@@ -1045,8 +1538,7 @@ def _build_graph(checkpointer: AsyncPostgresSaver) -> Any:
 # Module-level singletons
 # ---------------------------------------------------------------------------
 
-_pg_conn: AsyncConnection | None = None
-_checkpointer: AsyncPostgresSaver | None = None
+_checkpointer: AsyncSqliteSaver | None = None
 _graph: Any | None = None
 
 
@@ -1056,34 +1548,26 @@ def get_graph() -> Any:
     return _graph
 
 
-def _pg_conn_string() -> str:
-    """Convert SQLAlchemy asyncpg URL to a plain psycopg connection string."""
-    url = app_config.DATABASE_URL
-    # postgresql+asyncpg://user:pass@host:port/db → postgresql://user:pass@host:port/db
-    return url.replace("postgresql+asyncpg://", "postgresql://")
-
-
 async def init_supervisor() -> None:
-    global _pg_conn, _checkpointer, _graph, _worker_graph
-    conn_string = _pg_conn_string()
-    # Open a persistent connection for the checkpointer — lives for the app lifetime
-    _pg_conn = await AsyncConnection.connect(
-        conn_string, autocommit=True, prepare_threshold=0, row_factory=dict_row
-    )
-    _checkpointer = AsyncPostgresSaver(conn=_pg_conn)
+    global _checkpointer, _graph, _worker_graph
+    import aiosqlite
+    # Use a dedicated SQLite file for LangGraph checkpoints — avoids asyncpg
+    # event-loop conflicts on Windows (asyncpg vs psycopg can't share the same
+    # SelectorEventLoop cleanly on Python 3.14).
+    conn = await aiosqlite.connect("checkpoints.db")
+    _checkpointer = AsyncSqliteSaver(conn=conn)
     await _checkpointer.setup()
     _graph = _build_graph(_checkpointer)
     _worker_graph = _build_worker_graph()
 
 
 async def shutdown_supervisor() -> None:
-    global _pg_conn, _checkpointer, _graph, _worker_graph
+    global _checkpointer, _graph, _worker_graph
     _graph = None
     _worker_graph = None
-    _checkpointer = None
-    if _pg_conn is not None:
+    if _checkpointer is not None:
         try:
-            await _pg_conn.close()
+            await _checkpointer.conn.close()
         except Exception:
             pass
-        _pg_conn = None
+        _checkpointer = None

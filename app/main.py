@@ -31,6 +31,7 @@ from app.web.routes.skills import router as skills_router
 from app.web.routes.settings import router as settings_router
 from app.web.routes.telegram_commands import router as telegram_commands_router
 from app.web.routes.ws import router as ws_router
+from app.web.routes.workspaces import router as workspaces_router
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -73,6 +74,7 @@ app.include_router(telegram_router)
 app.include_router(connectors_router)
 app.include_router(tasks_router)
 app.include_router(telegram_commands_router)
+app.include_router(workspaces_router)
 
 
 @app.exception_handler(NotAuthenticated)

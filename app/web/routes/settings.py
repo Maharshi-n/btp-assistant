@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,16 +9,35 @@ import bcrypt
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.engine import get_db
-from app.db.models import Message, Thread, User
+from app.db.engine import AsyncSessionLocal, get_db
+from app.db.models import Message, OAuthToken, Thread, User, WorkspaceLocation
 from app.web.deps import require_user
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 router = APIRouter(prefix="/settings")
+
+
+def _update_env_var(key: str, value: str) -> None:
+    """Update or append a single key=value line in the .env file."""
+    env_path = BASE_DIR.parent / ".env"
+    if not env_path.exists():
+        return
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    found = False
+    new_lines = []
+    for line in lines:
+        if line.startswith(f"{key}="):
+            new_lines.append(f"{key}={value}")
+            found = True
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append(f"{key}={value}")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 templates = Jinja2Templates(directory=BASE_DIR / "web" / "templates")
 
 # Google OAuth scopes
@@ -33,26 +51,14 @@ _SCOPES = [
 _REDIRECT_URI = "http://localhost:8000/settings/google/callback"
 
 
-def _resolve_db_path() -> str:
-    import app.config as app_config
-    url = app_config.DATABASE_URL
-    if ":///" in url:
-        return url.split("///", 1)[-1]
-    return "app.db"
-
-
-def _is_google_connected() -> bool:
+async def _is_google_connected() -> bool:
     """Return True if a Google OAuth token row exists in the DB."""
     try:
-        db_path = _resolve_db_path()
-        conn = sqlite3.connect(db_path)
-        try:
-            row = conn.execute(
-                "SELECT 1 FROM oauth_tokens WHERE provider = 'google' LIMIT 1"
-            ).fetchone()
-        finally:
-            conn.close()
-        return row is not None
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(OAuthToken.id).where(OAuthToken.provider == "google").limit(1)
+            )
+            return result.scalar() is not None
     except Exception:
         return False
 
@@ -65,9 +71,23 @@ async def settings_page(
     import app.config as app_config
     from app.web.routes.chat import AVAILABLE_MODELS
 
-    google_connected = _is_google_connected()
+    google_connected = await _is_google_connected()
     google_configured = bool(app_config.GOOGLE_CLIENT_ID and app_config.GOOGLE_CLIENT_SECRET)
     fernet_configured = bool(app_config.FERNET_KEY)
+
+    # Load secondary workspace locations for the template
+    from sqlalchemy import select as _select
+    secondary_workspaces = []
+    async with AsyncSessionLocal() as _db:
+        _rows = (await _db.execute(
+            _select(WorkspaceLocation)
+            .where(WorkspaceLocation.is_primary == False)  # noqa: E712
+            .order_by(WorkspaceLocation.created_at)
+        )).scalars().all()
+        secondary_workspaces = [
+            {"id": r.id, "path": r.path, "label": r.label, "writable": r.writable}
+            for r in _rows
+        ]
 
     return templates.TemplateResponse(
         "settings.html",
@@ -77,7 +97,9 @@ async def settings_page(
             "google_configured": google_configured,
             "fernet_configured": fernet_configured,
             "workspace_dir": str(app_config.WORKSPACE_DIR),
+            "secondary_workspaces": secondary_workspaces,
             "available_models": list(AVAILABLE_MODELS),
+            "default_thread_model": app_config.DEFAULT_THREAD_MODEL,
             "telegram_bot_token": app_config.TELEGRAM_BOT_TOKEN,
             "telegram_chat_id": app_config.TELEGRAM_CHAT_ID,
             "telegram_webhook_url": app_config.TELEGRAM_WEBHOOK_URL,
@@ -107,6 +129,23 @@ async def update_workspace(
 
     # Update the live config value immediately
     app_config.WORKSPACE_DIR = new_path
+
+    # Upsert the primary WorkspaceLocation row in the DB
+    from sqlalchemy import select as _select
+    resolved_str = str(new_path)
+    async with AsyncSessionLocal() as _db:
+        current_primary = (await _db.execute(
+            _select(WorkspaceLocation).where(WorkspaceLocation.is_primary == True)  # noqa: E712
+        )).scalar_one_or_none()
+        if current_primary:
+            current_primary.path = resolved_str
+            current_primary.label = "Main workspace"
+        else:
+            _db.add(WorkspaceLocation(
+                path=resolved_str, label="Main workspace",
+                is_primary=True, writable=True,
+            ))
+        await _db.commit()
 
     # Persist to .env so it survives server restarts
     env_path = BASE_DIR.parent / ".env"
@@ -148,6 +187,24 @@ async def update_models(
     _save_models(models)
 
     return RedirectResponse(url="/settings?model_ok=1", status_code=302)
+
+
+@router.post("/default-model")
+async def update_default_model(
+    model: str = Form(...),
+    _user: User = Depends(require_user),
+):
+    """Save the default model for new threads. Updates live config + persists to .env."""
+    import app.config as app_config
+    from app.web.routes.chat import AVAILABLE_MODELS
+
+    model = model.strip()
+    if model not in AVAILABLE_MODELS:
+        return RedirectResponse(url="/settings?model_error=invalid", status_code=302)
+
+    app_config.DEFAULT_THREAD_MODEL = model
+    _update_env_var("DEFAULT_THREAD_MODEL", model)
+    return RedirectResponse(url="/settings?default_model_ok=1", status_code=302)
 
 
 @router.post("/telegram")
@@ -312,10 +369,48 @@ async def clear_chats(
     _user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete all messages and threads."""
+    """Delete all messages and threads, reset ID sequences, clear LangGraph checkpoints."""
+    import logging
+    import app.config as app_config
+    from sqlalchemy import text
+    from app.db.engine import AsyncSessionLocal
+
+    logger = logging.getLogger(__name__)
+
     await db.execute(delete(Message))
     await db.execute(delete(Thread))
     await db.commit()
+
+    # Run sequence reset + checkpoint cleanup in a fresh connection
+    # so DDL (ALTER SEQUENCE) doesn't conflict with the delete transaction.
+    try:
+        url = app_config.DATABASE_URL
+        async with AsyncSessionLocal() as conn:
+            if "postgresql" in url:
+                for seq in ("threads_id_seq", "messages_id_seq"):
+                    try:
+                        await conn.execute(text(f"ALTER SEQUENCE {seq} RESTART WITH 1"))
+                    except Exception as exc:
+                        logger.warning("clear_chats: reset seq %s: %s", seq, exc)
+                for tbl in ("checkpoints", "checkpoint_blobs", "checkpoint_migrations", "checkpoint_writes"):
+                    try:
+                        await conn.execute(text(f"DELETE FROM {tbl}"))
+                    except Exception:
+                        pass
+            else:
+                try:
+                    await conn.execute(text("DELETE FROM sqlite_sequence WHERE name IN ('threads', 'messages')"))
+                except Exception:
+                    pass
+                for tbl in ("checkpoints", "checkpoint_blobs", "checkpoint_writes"):
+                    try:
+                        await conn.execute(text(f"DELETE FROM {tbl}"))
+                    except Exception:
+                        pass
+            await conn.commit()
+    except Exception as exc:
+        logger.warning("clear_chats: post-commit cleanup failed: %s", exc)
+
     return RedirectResponse(url="/settings?cleared=1", status_code=302)
 
 
@@ -420,26 +515,18 @@ async def google_callback(
     fernet = Fernet(app_config.FERNET_KEY.encode())
     encrypted = fernet.encrypt(json.dumps(token_data).encode()).decode()
 
-    now = datetime.now(timezone.utc).isoformat()
-    db_path = _resolve_db_path()
-    conn = sqlite3.connect(db_path)
-    try:
-        existing = conn.execute(
-            "SELECT id FROM oauth_tokens WHERE provider = 'google' LIMIT 1"
-        ).fetchone()
+    now = datetime.now(timezone.utc)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(OAuthToken).where(OAuthToken.provider == "google").limit(1)
+        )
+        existing = result.scalar_one_or_none()
         if existing:
-            conn.execute(
-                "UPDATE oauth_tokens SET token_json = ?, refreshed_at = ? WHERE provider = 'google'",
-                (encrypted, now),
-            )
+            existing.token_json = encrypted
+            existing.refreshed_at = now
         else:
-            conn.execute(
-                "INSERT INTO oauth_tokens (provider, token_json, refreshed_at) VALUES ('google', ?, ?)",
-                (encrypted, now),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+            db.add(OAuthToken(provider="google", token_json=encrypted, refreshed_at=now))
+        await db.commit()
 
     response = RedirectResponse(url="/settings?connected=1", status_code=302)
     response.delete_cookie("google_oauth_state")
@@ -451,11 +538,7 @@ async def google_disconnect(
     _user: User = Depends(require_user),
 ):
     """Remove the stored Google OAuth token."""
-    db_path = _resolve_db_path()
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute("DELETE FROM oauth_tokens WHERE provider = 'google'")
-        conn.commit()
-    finally:
-        conn.close()
+    async with AsyncSessionLocal() as db:
+        await db.execute(delete(OAuthToken).where(OAuthToken.provider == "google"))
+        await db.commit()
     return RedirectResponse(url="/settings?disconnected=1", status_code=302)

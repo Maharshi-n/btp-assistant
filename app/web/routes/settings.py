@@ -76,11 +76,10 @@ async def settings_page(
     fernet_configured = bool(app_config.FERNET_KEY)
 
     # Load secondary workspace locations for the template
-    from sqlalchemy import select as _select
     secondary_workspaces = []
     async with AsyncSessionLocal() as _db:
         _rows = (await _db.execute(
-            _select(WorkspaceLocation)
+            select(WorkspaceLocation)
             .where(WorkspaceLocation.is_primary == False)  # noqa: E712
             .order_by(WorkspaceLocation.created_at)
         )).scalars().all()
@@ -131,15 +130,13 @@ async def update_workspace(
     app_config.WORKSPACE_DIR = new_path
 
     # Upsert the primary WorkspaceLocation row in the DB
-    from sqlalchemy import select as _select
     resolved_str = str(new_path)
     async with AsyncSessionLocal() as _db:
         current_primary = (await _db.execute(
-            _select(WorkspaceLocation).where(WorkspaceLocation.is_primary == True)  # noqa: E712
+            select(WorkspaceLocation).where(WorkspaceLocation.is_primary == True)  # noqa: E712
         )).scalar_one_or_none()
         if current_primary:
             current_primary.path = resolved_str
-            current_primary.label = "Main workspace"
         else:
             _db.add(WorkspaceLocation(
                 path=resolved_str, label="Main workspace",

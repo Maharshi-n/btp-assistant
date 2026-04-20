@@ -14,7 +14,7 @@ from app.agents.supervisor import init_supervisor, shutdown_supervisor
 from app.automations.runtime import start_automations_runtime, stop_automations_runtime
 import app.config as app_config
 from app.db.engine import get_db, init_db
-from app.db.models import Automation, AutomationConversation, AutomationRun, AutoMemoryConfig, MCPServer, MCPTool, Message, OAuthToken, ScheduledTask, ScheduledTaskRun, Skill, TelegramCommand, TelegramPendingFile, TelegramPendingFileItem, TelegramPendingReply, Thread, User, UserMemory  # noqa: F401 — ensures models are registered
+from app.db.models import Automation, AutomationConversation, AutomationRun, AutoMemoryConfig, MCPServer, MCPTool, Message, OAuthToken, ScheduledTask, ScheduledTaskRun, Skill, TelegramCommand, TelegramPendingFile, TelegramPendingFileItem, TelegramPendingReply, Thread, User, UserMemory, WorkspaceLocation  # noqa: F401 — ensures models are registered
 from app.db.seed import seed_admin
 from app.web.deps import NotAuthenticated, require_user
 from app.web.routes.audit import router as audit_router
@@ -34,9 +34,14 @@ from app.web.routes.ws import router as ws_router
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# Suppress noisy Windows WebSocket disconnect errors — these are normal when
-# the browser closes a tab or a phone screen locks mid-connection.
 logging.getLogger("websockets.legacy.protocol").setLevel(logging.CRITICAL)
+
+logging.getLogger("asyncio").addFilter(
+    type("_AsyncpgFilter", (logging.Filter,), {
+        "filter": staticmethod(lambda r: "Future exception was never retrieved" not in r.getMessage()
+                               and "InternalClientError" not in r.getMessage())
+    })()
+)
 logging.getLogger("uvicorn.error").addFilter(
     type("_WSFilter", (logging.Filter,), {
         "filter": staticmethod(lambda r: "data transfer failed" not in r.getMessage()
@@ -46,17 +51,14 @@ logging.getLogger("uvicorn.error").addFilter(
 
 app = FastAPI(title="RAION")
 
-# Static files
 app.mount(
     "/static",
     StaticFiles(directory=BASE_DIR / "web" / "static"),
     name="static",
 )
 
-# Templates
 templates = Jinja2Templates(directory=BASE_DIR / "web" / "templates")
 
-# Routers
 app.include_router(health_router)
 app.include_router(audit_router)
 app.include_router(auth_router)
@@ -154,7 +156,7 @@ async def _ensure_rag_skill_registered() -> None:
             if existing is None:
                 db.add(Skill(
                     name="rag",
-                    file_path="workspace/skills/rag.md",
+                    file_path="skills/rag.md",
                     trigger_description=(
                         "Use for semantic search across files — find/locate content, "
                         "search by meaning, cross-file queries. NOT for full extraction or summarization."

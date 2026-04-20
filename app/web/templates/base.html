@@ -1,11 +1,173 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" id="html-root">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{% block title %}BTP Assistant{% endblock %}</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <title>{% block title %}RAION{% endblock %}</title>
+  <script src="/static/tailwind.min.js"></script>
+  <script src="/static/htmx.min.js" defer></script>
+  <script>
+    // Apply theme before paint to avoid flash
+    (function() {
+      const t = localStorage.getItem('theme') || 'light';
+      document.getElementById('html-root').setAttribute('data-theme', t);
+      if (t === 'dark') document.getElementById('html-root').classList.add('dark');
+    })();
+  </script>
+  <style>
+    /* ── Dark theme overrides ───────────────────────────────────────────────── */
+
+    /* Backgrounds */
+    [data-theme="dark"] body                  { background-color: #0f172a; color: #e2e8f0; }
+    [data-theme="dark"] .bg-white             { background-color: #1e293b !important; }
+    [data-theme="dark"] .bg-gray-50           { background-color: #0f172a !important; }
+    [data-theme="dark"] .bg-gray-100          { background-color: #334155 !important; }
+    [data-theme="dark"] .bg-gray-200          { background-color: #475569 !important; }
+    [data-theme="dark"] .hover\:bg-gray-50:hover  { background-color: #1e293b !important; }
+    [data-theme="dark"] .hover\:bg-gray-100:hover { background-color: #334155 !important; }
+    [data-theme="dark"] .hover\:bg-gray-200:hover { background-color: #475569 !important; }
+
+    /* Text — shifted significantly brighter in dark mode */
+    [data-theme="dark"] .text-gray-900        { color: #f8fafc !important; }
+    [data-theme="dark"] .text-gray-800        { color: #f1f5f9 !important; }
+    [data-theme="dark"] .text-gray-700        { color: #e2e8f0 !important; }
+    [data-theme="dark"] .text-gray-600        { color: #cbd5e1 !important; }
+    [data-theme="dark"] .text-gray-500        { color: #94a3b8 !important; }
+    [data-theme="dark"] .text-gray-400        { color: #94a3b8 !important; }
+
+    /* Borders */
+    [data-theme="dark"] .border-gray-100      { border-color: #1e293b !important; }
+    [data-theme="dark"] .border-gray-200      { border-color: #334155 !important; }
+    [data-theme="dark"] .border-gray-300      { border-color: #475569 !important; }
+    [data-theme="dark"] .border-b             { border-color: #334155 !important; }
+    [data-theme="dark"] .border-t             { border-color: #334155 !important; }
+
+    /* Shadows */
+    [data-theme="dark"] .shadow-sm            { box-shadow: 0 1px 3px rgba(0,0,0,0.5) !important; }
+    [data-theme="dark"] .shadow-xl            { box-shadow: 0 10px 25px rgba(0,0,0,0.6) !important; }
+
+    /* Form controls */
+    [data-theme="dark"] input,
+    [data-theme="dark"] textarea,
+    [data-theme="dark"] select {
+      background-color: #1e293b !important;
+      border-color: #475569 !important;
+      color: #e2e8f0 !important;
+    }
+    [data-theme="dark"] input::placeholder,
+    [data-theme="dark"] textarea::placeholder { color: #64748b !important; }
+    [data-theme="dark"] input:disabled,
+    [data-theme="dark"] textarea:disabled     { background-color: #0f172a !important; color: #64748b !important; }
+
+    /* Assistant message bubbles */
+    [data-theme="dark"] #messages-pane .bg-white {
+      background-color: #1e293b !important;
+      border-color: #334155 !important;
+      color: #e2e8f0 !important;
+    }
+
+    /* Inline code inside messages */
+    [data-theme="dark"] code.bg-gray-100 {
+      background-color: #0f172a !important;
+      color: #93c5fd !important;
+    }
+
+    /* Skill autocomplete dropdown */
+    [data-theme="dark"] #skill-dropdown {
+      background-color: #1e293b !important;
+      border-color: #334155 !important;
+    }
+    [data-theme="dark"] #skill-dropdown button           { color: #e2e8f0 !important; border-color: #334155 !important; }
+    [data-theme="dark"] #skill-dropdown button:hover,
+    [data-theme="dark"] #skill-dropdown button.bg-blue-50 { background-color: #1d3a5c !important; color: #93c5fd !important; }
+    [data-theme="dark"] #skill-dropdown .text-gray-500   { color: #94a3b8 !important; }
+
+    /* Agents / workers panel */
+    [data-theme="dark"] #agents-panel         { background-color: #0f172a !important; border-color: #334155 !important; }
+    [data-theme="dark"] #agents-toggle        { background-color: #1e293b !important; }
+    [data-theme="dark"] #agents-toggle.border-gray-300 { border-color: #475569 !important; }
+
+    /* Coloured badge backgrounds */
+    [data-theme="dark"] .bg-blue-50           { background-color: #1e3a5f !important; }
+    [data-theme="dark"] .bg-green-50          { background-color: #14332a !important; }
+    [data-theme="dark"] .bg-amber-50          { background-color: #2d1f00 !important; }
+    [data-theme="dark"] .bg-red-50            { background-color: #2d1515 !important; }
+    [data-theme="dark"] .bg-amber-100         { background-color: #1c1208 !important; }
+
+    /* Coloured badge borders */
+    [data-theme="dark"] .border-blue-200      { border-color: #1d4ed8 !important; }
+    [data-theme="dark"] .border-green-200     { border-color: #15803d !important; }
+    [data-theme="dark"] .border-amber-200     { border-color: #92400e !important; }
+    [data-theme="dark"] .border-amber-300     { border-color: #b45309 !important; }
+    [data-theme="dark"] .border-red-200       { border-color: #991b1b !important; }
+    [data-theme="dark"] .border-red-300       { border-color: #b91c1c !important; }
+
+    /* Coloured text */
+    [data-theme="dark"] .text-blue-700        { color: #93c5fd !important; }
+    [data-theme="dark"] .text-blue-600        { color: #60a5fa !important; }
+    [data-theme="dark"] .text-green-700       { color: #86efac !important; }
+    [data-theme="dark"] .text-green-800       { color: #4ade80 !important; }
+    [data-theme="dark"] .text-amber-700       { color: #fcd34d !important; }
+    [data-theme="dark"] .text-amber-800       { color: #fbbf24 !important; }
+    [data-theme="dark"] .text-amber-900       { color: #f59e0b !important; }
+    [data-theme="dark"] .text-red-500         { color: #f87171 !important; }
+    [data-theme="dark"] .text-red-600         { color: #f87171 !important; }
+    [data-theme="dark"] .text-red-700         { color: #fca5a5 !important; }
+
+    /* Permission / warning cards: pre block */
+    [data-theme="dark"] pre.bg-amber-100      { background-color: #1c1208 !important; color: #fcd34d !important; }
+
+    /* Settings inner pages — card section headers */
+    [data-theme="dark"] section.bg-white > .bg-gray-50.border-b {
+      background-color: #0f172a !important;
+      border-color: #334155 !important;
+    }
+
+    /* Code tags in settings page prose */
+    [data-theme="dark"] code.font-mono        { background-color: #0f172a !important; color: #93c5fd !important; }
+
+    /* Gray secondary buttons (e.g. "Send test message") */
+    [data-theme="dark"] .bg-gray-100.text-gray-700 { background-color: #334155 !important; color: #e2e8f0 !important; }
+
+    /* Red outline danger buttons */
+    [data-theme="dark"] .border-red-300.text-red-600 { border-color: #dc2626 !important; color: #f87171 !important; }
+    [data-theme="dark"] .hover\:bg-red-50:hover       { background-color: #2d1515 !important; }
+
+    /* Toggle switch off-state track */
+    [data-theme="dark"] .bg-gray-300          { background-color: #475569 !important; }
+
+    /* Examples panel in connectors */
+    [data-theme="dark"] #examples-panel                         { border-color: #334155 !important; background-color: #1e293b !important; }
+    [data-theme="dark"] #examples-panel > div:first-child       { background-color: #0f172a !important; color: #94a3b8 !important; }
+    [data-theme="dark"] #examples-panel button                  { border-color: #334155 !important; color: #e2e8f0 !important; background-color: transparent; }
+    [data-theme="dark"] #examples-panel button:hover            { background-color: #1e3a5c !important; color: #93c5fd !important; }
+    [data-theme="dark"] #examples-panel button .text-gray-700  { color: #f1f5f9 !important; }
+    [data-theme="dark"] #examples-panel button .text-gray-400  { color: #94a3b8 !important; }
+    [data-theme="dark"] #examples-panel button:hover .text-gray-700 { color: #93c5fd !important; }
+    [data-theme="dark"] #examples-panel button:hover .text-gray-400 { color: #7dd3fc !important; }
+
+    /* Additional workspace locations disclosure */
+    [data-theme="dark"] #extra-workspaces                           { border-color: #334155 !important; }
+    [data-theme="dark"] #extra-workspaces summary                   { color: #e2e8f0 !important; }
+    [data-theme="dark"] #extra-workspaces summary:hover             { background-color: #1e293b !important; }
+    [data-theme="dark"] #extra-workspaces #locations-list           { background-color: #1e293b !important; }
+    [data-theme="dark"] #extra-workspaces .border-gray-100          { border-color: #334155 !important; }
+    [data-theme="dark"] #extra-workspaces .text-gray-400            { color: #94a3b8 !important; }
+    [data-theme="dark"] #extra-workspaces .border-gray-300          { border-color: #475569 !important; }
+    [data-theme="dark"] #extra-workspaces .text-gray-600            { color: #cbd5e1 !important; }
+
+    /* Thinking bounce animation */
+    @keyframes raion-bounce {
+      0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+      40%            { transform: translateY(-4px); opacity: 1; }
+    }
+
+    /* Scrollbar */
+    [data-theme="dark"] ::-webkit-scrollbar             { width: 6px; height: 6px; }
+    [data-theme="dark"] ::-webkit-scrollbar-track       { background: #0f172a; }
+    [data-theme="dark"] ::-webkit-scrollbar-thumb       { background: #334155; border-radius: 3px; }
+    [data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #475569; }
+  </style>
 </head>
 <body class="bg-gray-50 text-gray-900 min-h-screen">
   {% block content %}{% endblock %}

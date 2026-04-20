@@ -58,8 +58,9 @@
     </div>
     {% endif %}
 
-    {% set model_ok    = request.query_params.get('model_ok') %}
-    {% set model_error = request.query_params.get('model_error') %}
+    {% set model_ok          = request.query_params.get('model_ok') %}
+    {% set model_error       = request.query_params.get('model_error') %}
+    {% set default_model_ok  = request.query_params.get('default_model_ok') %}
     {% set ws_ok       = request.query_params.get('ws_ok') %}
     {% set ws_error    = request.query_params.get('ws_error') %}
     {% set tg_ok          = request.query_params.get('tg_ok') %}
@@ -87,6 +88,18 @@
     {% elif ws_error == 'not_dir' %}
     <div class="rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
       That path exists but is not a directory.
+    </div>
+    {% endif %}
+
+    {% set loc_ok     = request.query_params.get('loc_ok') %}
+    {% set loc_error  = request.query_params.get('loc_error') %}
+    {% if loc_ok %}
+    <div class="rounded-xl bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
+      Workspace locations updated.
+    </div>
+    {% elif loc_error %}
+    <div class="rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+      {{ loc_error }}
     </div>
     {% endif %}
 
@@ -129,20 +142,99 @@
         </svg>
         <h2 class="text-sm font-semibold text-gray-700">Workspace Directory</h2>
       </div>
-      <form action="/settings/workspace" method="post" class="px-6 py-5 space-y-3">
-        <p class="text-xs text-gray-500">
-          The assistant reads and writes files within this directory.
-          The directory will be created if it doesn't exist. Changes take effect immediately and are saved to <code class="font-mono bg-gray-100 rounded px-1">.env</code>.
-        </p>
-        <input type="text" name="workspace" value="{{ workspace_dir }}"
-               class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono
-                      focus:outline-none focus:ring-2 focus:ring-blue-500"/>
-        <button type="submit"
-                class="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium
-                       hover:bg-blue-700 transition-colors">
-          Save workspace
-        </button>
-      </form>
+      <div class="px-6 py-5 space-y-4">
+        <!-- Primary workspace -->
+        <form action="/settings/workspace" method="post" class="space-y-3">
+          <p class="text-xs text-gray-500">
+            The assistant reads and writes files within this directory by default.
+            Changes take effect immediately and are saved to <code class="font-mono bg-gray-100 rounded px-1">.env</code>.
+          </p>
+          <input type="text" name="workspace" value="{{ workspace_dir }}"
+                 class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono
+                        focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+          <button type="submit"
+                  class="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium
+                         hover:bg-blue-700 transition-colors">
+            Save workspace
+          </button>
+        </form>
+
+        <!-- Additional locations disclosure -->
+        <details id="extra-workspaces" class="border border-gray-200 rounded-lg">
+          <summary class="flex items-center justify-between px-4 py-3 cursor-pointer select-none text-sm text-gray-700 font-medium hover:bg-gray-50 rounded-lg">
+            <span>Additional locations
+              {% if secondary_workspaces %}
+              <span class="ml-1.5 text-xs font-normal text-gray-400">({{ secondary_workspaces|length }})</span>
+              {% endif %}
+            </span>
+            <svg class="w-4 h-4 text-gray-400 transition-transform details-chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+            </svg>
+          </summary>
+          <div class="px-4 pb-4 pt-2 space-y-2" id="locations-list">
+            {% if secondary_workspaces %}
+            {% for loc in secondary_workspaces %}
+            <div class="flex items-center gap-2 py-2 border-b border-gray-100 last:border-0" id="loc-row-{{ loc.id }}">
+              <div class="flex-1 min-w-0">
+                <p class="text-xs font-medium text-gray-700 truncate">{{ loc.label }}</p>
+                <p class="text-xs text-gray-400 font-mono truncate">{{ loc.path }}</p>
+              </div>
+              <span class="shrink-0 text-xs px-2 py-0.5 rounded-full border
+                {% if loc.writable %}bg-green-50 border-green-200 text-green-700{% else %}bg-gray-100 border-gray-200 text-gray-500{% endif %}">
+                {{ 'read+write' if loc.writable else 'read-only' }}
+              </span>
+              <button type="button"
+                      onclick="setLocPrimary({{ loc.id }})"
+                      class="shrink-0 text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors">
+                Set primary
+              </button>
+              <button type="button"
+                      onclick="deleteLoc({{ loc.id }})"
+                      class="shrink-0 text-gray-400 hover:text-red-500 transition-colors">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+              </button>
+            </div>
+            {% endfor %}
+            {% else %}
+            <p class="text-xs text-gray-400 py-1">No additional locations added yet.</p>
+            {% endif %}
+
+            <!-- Add location inline form -->
+            <div id="add-loc-form" class="hidden pt-2 space-y-2">
+              <div class="flex gap-2">
+                <input id="new-loc-label" type="text" placeholder="Label (e.g. E Drive)"
+                       class="w-1/3 rounded border border-gray-300 px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+                <input id="new-loc-path" type="text" placeholder="Path (e.g. E:\Projects)"
+                       class="flex-1 rounded border border-gray-300 px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+              </div>
+              <div class="flex items-center gap-3">
+                <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                  <input type="checkbox" id="new-loc-writable" checked class="rounded"/>
+                  Read+write
+                </label>
+                <button type="button" onclick="submitAddLoc()"
+                        class="px-3 py-1 rounded bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 transition-colors">
+                  Add
+                </button>
+                <button type="button" onclick="cancelAddLoc()"
+                        class="px-3 py-1 rounded border border-gray-300 text-gray-600 text-xs hover:bg-gray-50 transition-colors">
+                  Cancel
+                </button>
+                <span id="add-loc-error" class="text-xs text-red-500 hidden"></span>
+              </div>
+            </div>
+
+            <div class="pt-1">
+              <button type="button" id="show-add-loc-btn" onclick="showAddLoc()"
+                      class="text-xs text-blue-600 hover:text-blue-800 font-medium transition-colors">
+                + Add location
+              </button>
+            </div>
+          </div>
+        </details>
+      </div>
     </section>
 
     <!-- Telegram Notifications Card -->
@@ -154,18 +246,9 @@
                    00-9.33-4.997M9 11v3.159c0 .538-.214 1.055-.595
                    1.436L7 17h5m0 0v1a3 3 0 11-6 0v-1m6 0H9"/>
         </svg>
-        <h2 class="text-sm font-semibold text-gray-700">Telegram Notifications</h2>
+        <h2 class="text-sm font-semibold text-gray-700">Telegram</h2>
       </div>
       <div class="px-6 py-5 space-y-4">
-        <p class="text-xs text-gray-500">
-          When an automation includes "notify me on Telegram", the assistant will send
-          a short message to your Telegram account.
-          <br><br>
-          Setup: message <code class="font-mono bg-gray-100 rounded px-1">@BotFather</code> on Telegram → <code class="font-mono bg-gray-100 rounded px-1">/newbot</code> → get your token.
-          Then message your bot once and visit
-          <code class="font-mono bg-gray-100 rounded px-1">api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code>
-          to find your Chat ID.
-        </p>
         <form action="/settings/telegram" method="post" class="space-y-3">
           <div>
             <label class="block text-xs font-medium text-gray-600 mb-1">Bot Token</label>
@@ -199,11 +282,7 @@
           </div>
         </form>
         <div class="border-t pt-4 mt-2">
-          <p class="text-xs font-medium text-gray-600 mb-2">Webhook (for interactive replies)</p>
-          <p class="text-xs text-gray-500 mb-3">
-            Enter your ngrok base URL to enable two-way conversations. RAION will register
-            <code class="font-mono bg-gray-100 rounded px-1">/telegram/webhook</code> with Telegram automatically.
-          </p>
+          <p class="text-xs font-medium text-gray-600 mb-2">Webhook URL</p>
           {% if telegram_webhook_active %}
           <div class="flex items-center gap-2 mb-3">
             <span class="inline-block w-2 h-2 rounded-full bg-green-500"></span>
@@ -278,6 +357,37 @@
                 class="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium
                        hover:bg-blue-700 transition-colors">
           Save models
+        </button>
+      </form>
+    </section>
+
+    <!-- Default Thread Model Card -->
+    <section class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="px-6 py-4 border-b bg-gray-50 flex items-center gap-3">
+        <svg class="w-4 h-4 text-gray-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 6h16M4 10h16M4 14h8M4 18h8"/>
+        </svg>
+        <h2 class="text-sm font-semibold text-gray-700">Default Thread Model</h2>
+      </div>
+      <form action="/settings/default-model" method="post" class="px-6 py-5 space-y-3">
+        {% if default_model_ok %}
+        <div class="rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-sm text-green-800">
+          Default model updated.
+        </div>
+        {% endif %}
+        <p class="text-xs text-gray-500">Model used when creating a new chat thread.</p>
+        <select name="model"
+                class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm
+                       focus:outline-none focus:ring-2 focus:ring-blue-500">
+          {% for m in available_models %}
+          <option value="{{ m }}" {% if m == default_thread_model %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit"
+                class="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium
+                       hover:bg-blue-700 transition-colors">
+          Save default model
         </button>
       </form>
     </section>
@@ -428,7 +538,7 @@
     <!-- Sign out -->
     <div class="text-center">
       <form action="/logout" method="post">
-        <button type="submit" class="text-sm text-gray-400 hover:text-gray-700 transition-colors">
+        <button type="submit" class="text-sm text-red-500 hover:text-red-700 transition-colors font-medium">
           Sign out
         </button>
       </form>
@@ -436,4 +546,66 @@
 
   </main>
 </div>
+<script>
+function showAddLoc() {
+  document.getElementById('add-loc-form').classList.remove('hidden');
+  document.getElementById('show-add-loc-btn').classList.add('hidden');
+  document.getElementById('new-loc-label').focus();
+}
+function cancelAddLoc() {
+  document.getElementById('add-loc-form').classList.add('hidden');
+  document.getElementById('show-add-loc-btn').classList.remove('hidden');
+  document.getElementById('add-loc-error').classList.add('hidden');
+  document.getElementById('new-loc-label').value = '';
+  document.getElementById('new-loc-path').value = '';
+  document.getElementById('new-loc-writable').checked = true;
+}
+async function submitAddLoc() {
+  const label = document.getElementById('new-loc-label').value.trim();
+  const path  = document.getElementById('new-loc-path').value.trim();
+  const writable = document.getElementById('new-loc-writable').checked;
+  const errEl = document.getElementById('add-loc-error');
+  errEl.classList.add('hidden');
+  if (!path) { errEl.textContent = 'Path is required.'; errEl.classList.remove('hidden'); return; }
+  const resp = await fetch('/api/workspaces', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label: label || path, path, writable }),
+  });
+  if (resp.ok) {
+    location.reload();
+  } else {
+    const data = await resp.json().catch(() => ({}));
+    errEl.textContent = data.detail || 'Failed to add location.';
+    errEl.classList.remove('hidden');
+  }
+}
+async function deleteLoc(id) {
+  const resp = await fetch(`/api/workspaces/${id}`, { method: 'DELETE' });
+  if (resp.ok) {
+    document.getElementById(`loc-row-${id}`)?.remove();
+  } else {
+    const data = await resp.json().catch(() => ({}));
+    alert(data.detail || 'Could not remove location.');
+  }
+}
+async function setLocPrimary(id) {
+  const resp = await fetch(`/api/workspaces/${id}/set-primary`, { method: 'POST' });
+  if (resp.ok) {
+    location.reload();
+  } else {
+    const data = await resp.json().catch(() => ({}));
+    alert(data.detail || 'Could not set as primary.');
+  }
+}
+// Rotate chevron when details is opened/closed
+document.addEventListener('DOMContentLoaded', () => {
+  const det = document.getElementById('extra-workspaces');
+  if (det) {
+    det.addEventListener('toggle', () => {
+      det.querySelector('.details-chevron').style.transform = det.open ? 'rotate(180deg)' : '';
+    });
+  }
+});
+</script>
 {% endblock %}

@@ -15,7 +15,7 @@ from app.automations.runtime import start_automations_runtime, stop_automations_
 import app.config as app_config
 from app.db.engine import get_db, init_db
 from app.db.models import Automation, AutomationConversation, AutomationRun, AutoMemoryConfig, MCPServer, MCPTool, Message, OAuthToken, ScheduledTask, ScheduledTaskRun, Skill, TelegramCommand, TelegramPendingFile, TelegramPendingFileItem, TelegramPendingReply, Thread, User, UserMemory, WorkspaceLocation  # noqa: F401 — ensures models are registered
-from app.db.seed import seed_admin
+from app.db.seed import seed_admin, seed_primary_workspace
 from app.web.deps import NotAuthenticated, require_user
 from app.web.routes.audit import router as audit_router
 from app.web.routes.auth import router as auth_router
@@ -85,6 +85,7 @@ async def on_startup() -> None:
     app_config.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
     await init_db()
     await seed_admin()
+    await seed_primary_workspace()
     await init_supervisor()
     await start_automations_runtime()
     await _reregister_telegram_webhook()

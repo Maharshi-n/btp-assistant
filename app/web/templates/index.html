@@ -121,6 +121,15 @@
           </svg>
           TG Commands
         </a>
+        <a href="/whatsapp"
+           class="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300
+                  hover:bg-gray-700 hover:text-white transition-colors">
+          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+          </svg>
+          WhatsApp
+        </a>
         <a href="/audit"
            class="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300
                   hover:bg-gray-700 hover:text-white transition-colors">
@@ -188,11 +197,11 @@
         </svg>
       </button>
 
-      <div class="flex-1 min-w-0">
+      <div class="flex-1 min-w-0 group/title">
         <h1 id="thread-title" class="text-sm font-medium text-gray-700 truncate">
-          Select or create a chat
+          RAION
         </h1>
-        <p id="thread-id-label" class="text-xs text-gray-400 hidden"></p>
+        <p id="thread-id-label" class="text-xs text-gray-400 hidden opacity-0 group-hover/title:opacity-100 transition-opacity duration-150"></p>
       </div>
 
       <!-- Model switcher -->
@@ -236,10 +245,11 @@
 
     <!-- Message pane -->
     <div id="messages-pane"
-         class="flex-1 overflow-y-auto px-4 py-6 space-y-4">
+         class="flex-1 overflow-y-auto px-4 py-6 space-y-4 flex flex-col">
       <!-- Welcome state when no thread selected -->
-      <div id="welcome-msg" class="flex flex-col items-center justify-center h-full text-center">
-        <p class="text-gray-400 text-sm">Start a new chat or select one from the sidebar.</p>
+      <div id="welcome-msg" class="flex flex-col items-center justify-center flex-1 text-center gap-2">
+        <p class="text-2xl font-semibold text-gray-700">Hey, Maharshi</p>
+        <p class="text-gray-400 text-sm">What can I help you with today?</p>
       </div>
     </div>
 
@@ -285,17 +295,31 @@
           class="shrink-0 rounded-xl border border-gray-300 text-gray-500 px-3 py-2 text-sm
                  hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed
                  transition-colors">
-          📎
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66L9.41 17.41a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+          </svg>
+        </button>
+
+        <button
+          id="stop-btn"
+          type="button"
+          onclick="stopGeneration()"
+          class="hidden shrink-0 rounded-xl bg-red-500 text-white px-4 py-2 text-sm
+                 hover:bg-red-600 transition-colors">
+          Stop
         </button>
 
         <button
           id="send-btn"
           type="submit"
           disabled
-          class="shrink-0 rounded-xl bg-blue-600 text-white px-4 py-2 text-sm
+          class="shrink-0 rounded-xl bg-blue-600 text-white px-3 py-2
                  hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed
                  transition-colors">
-          Send
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"/>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          </svg>
         </button>
       </form>
     </div>
@@ -313,7 +337,39 @@
   let activeWorkers = {};       // worker_id -> {el, toolCount}
   let _clockStart = null;       // wall-clock start timestamp
   let _clockInterval = null;    // setInterval handle
+  let _ignoringWsEvents = false; // true after Stop until next message is sent
   let pendingAttachment = null; // {file: File, name: string} when a file is queued
+  let _statusPollTimer = null;  // setInterval handle for generation status polling
+  let _hideAgentsTimers = [];   // pending setTimeout handles from hideAgentsPanel
+
+  // ─── Generation status polling ───────────────────────────────────────────
+  // Poll every 2s while a thread is generating so the streaming indicator
+  // survives WS reconnects, thread switches, and page refreshes.
+  function _startStatusPoll(threadId) {
+    _stopStatusPoll();
+    _statusPollTimer = setInterval(async () => {
+      if (activeThreadId !== threadId) { _stopStatusPoll(); return; }
+      try {
+        const res = await fetch(`/api/threads/${threadId}/status`);
+        if (!res.ok) return;
+        const { generating } = await res.json();
+        if (!generating) {
+          _stopStatusPoll();
+          return;
+        }
+        // Still generating — ensure indicator is visible
+        if (!streamingBubble && !_ignoringWsEvents) {
+          appendStreamingBubble();
+          setInputEnabled(false);
+          _showToggleBtn(true);
+        }
+      } catch (_) {}
+    }, 2000);
+  }
+
+  function _stopStatusPoll() {
+    if (_statusPollTimer) { clearInterval(_statusPollTimer); _statusPollTimer = null; }
+  }
 
   // ─── Sidebar (mobile) ────────────────────────────────────────────────────
   function openSidebar() {
@@ -408,6 +464,7 @@
   }
 
   function handleWsMessage(msg) {
+    if (_ignoringWsEvents) return;
     if (msg.type === 'token') {
       appendToken(msg.content);
     } else if (msg.type === 'done') {
@@ -438,6 +495,10 @@
       workerToolResult(msg.worker_id, msg.tool);
     } else if (msg.type === 'worker_end') {
       workerDone(msg.worker_id);
+    } else if (msg.type === 'worker_status') {
+      showAgentStatus(msg.content, 'thinking');
+    } else if (msg.type === 'workers_banner') {
+      showAgentStatus(msg.text, msg.status === 'done' ? 'done' : 'thinking');
     } else {
       console.warn('Unknown WebSocket frame type:', msg.type);
     }
@@ -499,13 +560,18 @@
     _showToggleBtn(status === 'thinking');
 
     if (status === 'thinking') {
-      statusEl.className = 'flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700';
-      statusEl.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse inline-block"></span> thinking…';
-      // Start wall-clock if not already running
+      statusEl.className = 'flex items-center gap-2 px-2.5 py-1 rounded-full bg-blue-50 border border-blue-200 text-blue-700';
+      statusEl.innerHTML = `
+        <span class="flex gap-0.5 items-center">
+          <span class="w-1 h-1 rounded-full bg-blue-500 inline-block" style="animation:raion-bounce 1.2s ease-in-out infinite;animation-delay:0s"></span>
+          <span class="w-1 h-1 rounded-full bg-blue-500 inline-block" style="animation:raion-bounce 1.2s ease-in-out infinite;animation-delay:0.2s"></span>
+          <span class="w-1 h-1 rounded-full bg-blue-500 inline-block" style="animation:raion-bounce 1.2s ease-in-out infinite;animation-delay:0.4s"></span>
+        </span>
+        <span class="text-xs">thinking</span>`;
       if (!_clockStart) _startClock();
     } else {
-      statusEl.className = 'flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-50 border border-green-200 text-green-700';
-      statusEl.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span> done';
+      statusEl.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-green-50 border border-green-200 text-green-700';
+      statusEl.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span><span class="text-xs">done</span>';
     }
   }
 
@@ -514,31 +580,55 @@
     toolEl.classList.remove('hidden');
     toolEl.classList.add('flex');
     if (status === 'calling') {
-      toolEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse inline-block"></span> ${escapeHtml(toolName)}…`;
+      toolEl.innerHTML = `
+        <span class="flex gap-0.5 items-center">
+          <span class="w-1 h-1 rounded-full bg-amber-500 inline-block" style="animation:raion-bounce 1.2s ease-in-out infinite;animation-delay:0s"></span>
+          <span class="w-1 h-1 rounded-full bg-amber-500 inline-block" style="animation:raion-bounce 1.2s ease-in-out infinite;animation-delay:0.2s"></span>
+          <span class="w-1 h-1 rounded-full bg-amber-500 inline-block" style="animation:raion-bounce 1.2s ease-in-out infinite;animation-delay:0.4s"></span>
+        </span>
+        <span>${escapeHtml(toolName)}</span>`;
     } else {
-      toolEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block"></span> ${escapeHtml(toolName)} ✓`;
+      toolEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block"></span><span>${escapeHtml(toolName)} ✓</span>`;
     }
+  }
+
+  function _resetAgentsPanel() {
+    // Cancel any pending hide timers from a previous thread
+    _hideAgentsTimers.forEach(t => clearTimeout(t));
+    _hideAgentsTimers = [];
+    _stopClock();
+    drawerOpen = false;
+    activeWorkers = {};
+    document.getElementById('agents-panel').classList.add('hidden');
+    document.getElementById('worker-rows').innerHTML = '';
+    document.getElementById('agent-tool-status').classList.add('hidden');
+    document.getElementById('agent-tool-status').classList.remove('flex');
+    document.getElementById('agent-supervisor-status').className =
+      'flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border text-gray-500';
+    document.getElementById('agent-supervisor-status').innerHTML = '';
+    const btn = document.getElementById('agents-toggle');
+    btn.classList.add('hidden');
+    btn.classList.remove('flex');
   }
 
   function hideAgentsPanel() {
     _stopClock();
-    // After a short delay: stop pulsing, close drawer, reset
-    setTimeout(() => {
+    const t1 = setTimeout(() => {
       _showToggleBtn(false);
       const toolEl = document.getElementById('agent-tool-status');
       toolEl.classList.add('hidden');
       toolEl.classList.remove('flex');
     }, 1500);
-    setTimeout(() => {
+    const t2 = setTimeout(() => {
       document.getElementById('agents-panel').classList.add('hidden');
       document.getElementById('worker-rows').innerHTML = '';
       activeWorkers = {};
       drawerOpen = false;
-      // Hide the toggle button entirely once everything is settled
       const btn = document.getElementById('agents-toggle');
       btn.classList.add('hidden');
       btn.classList.remove('flex');
     }, 4000);
+    _hideAgentsTimers.push(t1, t2);
   }
 
   // ─── Worker tree panel ────────────────────────────────────────────────────
@@ -615,7 +705,7 @@
     if (empty) empty.remove();
 
     const wrapper = document.createElement('div');
-    wrapper.className = 'flex justify-start';
+    wrapper.className = 'flex justify-start group';
     wrapper.id = 'streaming-wrapper';
 
     const bubble = document.createElement('div');
@@ -623,9 +713,12 @@
     bubble.id = 'streaming-bubble';
 
     const cursor = document.createElement('span');
-    cursor.className = 'animate-pulse';
     cursor.id = 'streaming-cursor';
-    cursor.textContent = '▋';
+    cursor.className = 'inline-flex gap-0.5 items-center ml-1 align-middle';
+    cursor.innerHTML = `
+      <span class="w-1 h-1 rounded-full bg-gray-400 inline-block" style="animation:raion-bounce 1.2s ease-in-out infinite;animation-delay:0s"></span>
+      <span class="w-1 h-1 rounded-full bg-gray-400 inline-block" style="animation:raion-bounce 1.2s ease-in-out infinite;animation-delay:0.2s"></span>
+      <span class="w-1 h-1 rounded-full bg-gray-400 inline-block" style="animation:raion-bounce 1.2s ease-in-out infinite;animation-delay:0.4s"></span>`;
 
     bubble.appendChild(cursor);
     wrapper.appendChild(bubble);
@@ -705,9 +798,12 @@
     // Render markdown, then re-attach cursor
     streamingBubble.innerHTML = renderMarkdown(streamingText);
     const newCursor = document.createElement('span');
-    newCursor.className = 'animate-pulse';
     newCursor.id = 'streaming-cursor';
-    newCursor.textContent = '▋';
+    newCursor.className = 'inline-flex gap-0.5 items-center ml-1 align-middle';
+    newCursor.innerHTML = `
+      <span class="w-1 h-1 rounded-full bg-gray-400 inline-block" style="animation:raion-bounce 1.2s ease-in-out infinite;animation-delay:0s"></span>
+      <span class="w-1 h-1 rounded-full bg-gray-400 inline-block" style="animation:raion-bounce 1.2s ease-in-out infinite;animation-delay:0.2s"></span>
+      <span class="w-1 h-1 rounded-full bg-gray-400 inline-block" style="animation:raion-bounce 1.2s ease-in-out infinite;animation-delay:0.4s"></span>`;
     streamingBubble.appendChild(newCursor);
 
     const pane = document.getElementById('messages-pane');
@@ -716,8 +812,20 @@
 
   function finalizeStreamingBubble() {
     if (!streamingBubble) return;
+    _stopStatusPoll();
     // Final render without cursor
     streamingBubble.innerHTML = renderMarkdown(streamingText);
+    // Add hover timestamp
+    const ts = document.createElement('div');
+    ts.className = 'text-[10px] mt-0.5 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity duration-150';
+    ts.textContent = new Date().toLocaleString('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      minute: '2-digit',
+      day: 'numeric',
+      month: 'short',
+    });
+    streamingBubble.appendChild(ts);
     streamingBubble = null;
     streamingText = '';
     setInputEnabled(true);
@@ -725,6 +833,7 @@
 
   function showStreamingError(message) {
     if (!streamingBubble) return;
+    _stopStatusPoll();
     streamingBubble.className = 'max-w-[80%] bg-red-50 border border-red-300 text-red-700 rounded-2xl rounded-bl-sm px-4 py-2 text-sm whitespace-pre-wrap break-words shadow-sm';
     streamingBubble.textContent = '⚠️ ' + message;
     streamingBubble = null;
@@ -737,9 +846,31 @@
     document.getElementById('msg-input').disabled = !enabled;
     document.getElementById('send-btn').disabled = !enabled;
     document.getElementById('attach-btn').disabled = !enabled;
+    document.getElementById('stop-btn').classList.toggle('hidden', enabled);
+    document.getElementById('send-btn').classList.toggle('hidden', !enabled);
     if (enabled) {
       document.getElementById('msg-input').focus();
     }
+  }
+
+  async function stopGeneration() {
+    if (!activeThreadId) return;
+    _ignoringWsEvents = true;
+    _stopStatusPoll();
+    // Clean up any active streaming bubble and agent panel
+    if (streamingBubble) {
+      const cursor = document.getElementById('streaming-cursor');
+      if (cursor) cursor.remove();
+      streamingBubble = null;
+      streamingText = '';
+    }
+    _resetAgentsPanel();
+    document.getElementById('stop-btn').disabled = true;
+    try {
+      await fetch(`/api/threads/${activeThreadId}/stop`, { method: 'POST' });
+    } catch (e) { /* ignore */ }
+    document.getElementById('stop-btn').disabled = false;
+    setInputEnabled(true);
   }
 
   // ─── Thread management ───────────────────────────────────────────────────
@@ -778,6 +909,7 @@
 
   async function loadThread(threadId, btnEl) {
     activeThreadId = threadId;
+    _resetAgentsPanel();
 
     // Highlight active thread in sidebar
     document.querySelectorAll('.thread-item').forEach(b => {
@@ -808,12 +940,30 @@
     renderMessages(messages, thread ? thread.title : 'Chat');
     setThreadHeader(thread ? thread.title : 'Chat', threadId);
 
-    // Enable input and model switcher
+    // Enable input and model switcher (may be overridden below if still generating)
     setInputEnabled(true);
     document.getElementById('model-select').disabled = false;
 
+    // Persist last active thread so page refresh restores it
+    localStorage.setItem('lastThreadId', threadId);
+
     // Connect WebSocket for this thread
     connectWs(threadId);
+
+    // Check if this thread is still generating and restore the streaming indicator
+    try {
+      const statusRes = await fetch(`/api/threads/${threadId}/status`);
+      if (statusRes.ok) {
+        const statusData = await statusRes.json();
+        if (statusData.generating) {
+          _ignoringWsEvents = false;
+          appendStreamingBubble();
+          setInputEnabled(false);
+          _showToggleBtn(true);
+          _startStatusPoll(threadId);
+        }
+      }
+    } catch (_) { /* non-fatal */ }
 
     closeSidebar();
   }
@@ -825,6 +975,7 @@
       lbl.textContent = '#' + threadId;
       lbl.classList.remove('hidden');
     } else {
+      lbl.textContent = '';
       lbl.classList.add('hidden');
     }
   }
@@ -840,10 +991,10 @@
       return;
     }
 
-    messages.forEach(m => appendMessage(m.role, m.content));
+    messages.forEach(m => appendMessage(m.role, m.content, m.created_at));
   }
 
-  function appendMessage(role, content) {
+  function appendMessage(role, content, createdAt) {
     const pane = document.getElementById('messages-pane');
 
     // Remove empty-state text if present
@@ -852,8 +1003,8 @@
 
     const wrapper = document.createElement('div');
     wrapper.className = role === 'user'
-      ? 'flex justify-end'
-      : 'flex justify-start';
+      ? 'flex justify-end group'
+      : 'flex justify-start group';
 
     const bubble = document.createElement('div');
     bubble.className = role === 'user'
@@ -865,6 +1016,21 @@
     } else {
       bubble.textContent = content;
     }
+
+    if (createdAt) {
+      const ts = document.createElement('div');
+      ts.className = 'text-[10px] mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 ' +
+        (role === 'user' ? 'text-blue-200 text-right' : 'text-gray-400');
+      ts.textContent = new Date(createdAt).toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit',
+        minute: '2-digit',
+        day: 'numeric',
+        month: 'short',
+      });
+      bubble.appendChild(ts);
+    }
+
     wrapper.appendChild(bubble);
     pane.appendChild(wrapper);
     pane.scrollTop = pane.scrollHeight;
@@ -881,9 +1047,10 @@
     // If it was the active thread, clear the chat pane
     if (activeThreadId === threadId) {
       activeThreadId = null;
+      localStorage.removeItem('lastThreadId');
       document.getElementById('messages-pane').innerHTML =
-        '<p class="text-gray-400 text-sm text-center mt-8">Select or create a chat to get started.</p>';
-      document.getElementById('thread-title').textContent = 'Select or create a chat';
+        '<p class="text-gray-400 text-sm text-center mt-8">What can I help you with today?</p>';
+      document.getElementById('thread-title').textContent = 'RAION';
       document.getElementById('thread-id-label').classList.add('hidden');
       setInputEnabled(false);
       document.getElementById('model-select').disabled = true;
@@ -982,7 +1149,9 @@
 
     // Show streaming bubble — tokens will arrive via WebSocket
     // Input stays disabled until streaming finishes (done/error frame re-enables it)
+    _ignoringWsEvents = false;
     appendStreamingBubble();
+    _startStatusPoll(activeThreadId);
   }
 
   // ─── Model switcher ──────────────────────────────────────────────────────
@@ -1241,13 +1410,19 @@
       .replace(/"/g, '&quot;');
   }
 
-// ─── Auto-load thread from URL query param (?thread=N) ───────────────────
+// ─── Auto-load last active thread on page load ───────────────────────────
   (function autoLoadThread() {
     const params = new URLSearchParams(window.location.search);
-    const tid = parseInt(params.get('thread'), 10);
+    let tid = parseInt(params.get('thread'), 10);
+    if (!tid) {
+      tid = parseInt(localStorage.getItem('lastThreadId') || '', 10);
+    }
     if (tid) {
       const btn = document.querySelector(`[data-thread-id="${tid}"]`);
-      loadThread(tid, btn || undefined);
+      // Only load if the thread still exists in the sidebar
+      if (btn || document.querySelector(`[data-thread-id="${tid}"]`)) {
+        loadThread(tid, btn || undefined);
+      }
     }
   })();
 </script>

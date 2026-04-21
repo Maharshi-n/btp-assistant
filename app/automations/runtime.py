@@ -1,0 +1,831 @@
+"""Phase 9: Automations runtime.
+
+Responsibilities:
+- On startup: load all enabled automations from DB and register them.
+- cron automations        → APScheduler CronTrigger job.
+- gmail_new_from_sender   → APScheduler IntervalTrigger job (every 2 min),
+                            tracks last_seen_message_id per sender.
+- fs_new_in_folder        → watchdog FileSystemEventHandler per folder.
+- When a trigger fires    → create a new Thread + first Message, run the
+                            action_prompt through the LangGraph supervisor
+                            (exactly like a user message), log an AutomationRun.
+- On disable/delete       → remove the job / observer immediately.
+- On startup after restart → all automations reload from DB.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+from watchdog.events import FileCreatedEvent, FileSystemEventHandler
+from watchdog.observers import Observer
+
+import app.config as app_config
+from app.db.engine import AsyncSessionLocal
+from app.db.models import Automation, AutomationRun, Message, Thread
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Module-level singletons
+# ---------------------------------------------------------------------------
+
+_scheduler: AsyncIOScheduler | None = None
+_observer: Observer | None = None
+
+# Maps automation_id → watchdog handler reference (so we can remove them)
+_fs_handlers: dict[int, tuple[Any, str]] = {}  # id → (handler, watch_path)
+
+# Per-automation lock — prevents concurrent poll coroutines from double-firing
+_gmail_poll_locks: dict[int, asyncio.Lock] = {}
+
+
+# ---------------------------------------------------------------------------
+# Trigger-fire helper
+# ---------------------------------------------------------------------------
+
+async def _fire_automation(automation_id: int, trigger_context: dict | None = None) -> None:
+    """Core: load the automation, create a thread + run, invoke the supervisor.
+
+    trigger_context: optional extra info injected into the prompt, e.g.
+        {"file_path": "/path/to/new_file.txt"} for fs_new_in_folder triggers.
+    """
+    async with AsyncSessionLocal() as db:
+        automation = await db.get(Automation, automation_id)
+        if automation is None or not automation.enabled:
+            return
+
+        # Create a new thread for this run
+        thread = Thread(
+            title=f"[Auto] {automation.name[:60]}",
+            model=automation.model,
+        )
+        db.add(thread)
+        await db.flush()
+
+        conversation_id: int | None = None
+
+        # For non-email/non-fs triggers (e.g. cron), pre-create a conversation
+        # so that telegram_ask has a conversation_id to attach to, enabling the
+        # webhook to resume correctly when the user replies.
+        if not trigger_context:
+            from app.automations.conversations import create_conversation
+            conversation_id = await create_conversation(
+                automation_id=automation_id,
+                trigger_kind="cron",
+            )
+            # Use a different prefix that allows telegram_ask (asking the user via Telegram
+            # is how these automations communicate — it is NOT a clarifying question).
+            _EXEC_PREFIX = (
+                "[AUTOMATION RUN — execute immediately. "
+                "Call tools directly as instructed. "
+                "You MAY call telegram_ask to interact with the user via Telegram.]\n\n"
+            )
+            # Inject conversation_id prominently so the LLM passes it to telegram_ask
+            effective_prompt = (
+                _EXEC_PREFIX
+                + automation.action_prompt
+                + f"\n\n━━━ SYSTEM: conversation_id={conversation_id} ━━━"
+                + f"\nYou MUST pass conversation_id={conversation_id} to EVERY telegram_ask call."
+            )
+        else:
+            # For email/fs triggers, keep the original no-questions prefix
+            _EXEC_PREFIX = (
+                "[AUTOMATION RUN — execute immediately, no questions, no clarifications. "
+                "Call tools directly as instructed. Do not ask the user anything "
+                "(use telegram_ask if the action_prompt explicitly requires it).]\n\n"
+            )
+            effective_prompt = _EXEC_PREFIX + automation.action_prompt
+
+        if trigger_context:
+            if "email_from" in trigger_context:
+                from app.automations.conversations import create_conversation
+                conversation_id = await create_conversation(
+                    automation_id=automation_id,
+                    trigger_kind="gmail",
+                    email_from=trigger_context.get("email_from", ""),
+                    email_subject=trigger_context.get("email_subject", ""),
+                    email_body=trigger_context.get("email_body", ""),
+                    email_date=trigger_context.get("email_date", ""),
+                )
+                email_block = (
+                    f"\n\n━━━ TRUSTED TRIGGER CONTEXT ━━━"
+                    f"\nconversation_id: {conversation_id}"
+                    f"\nrecipient_email: {trigger_context.get('email_from', '')}"
+                    f"\nemail_subject: {trigger_context.get('email_subject', '(no subject)')}"
+                    f"\nemail_date: {trigger_context.get('email_date', '')}"
+                    f"\n\nemail_body:\n{trigger_context.get('email_body', '(no body)')}"
+                    f"\n━━━ END TRUSTED CONTEXT ━━━"
+                )
+                effective_prompt = (
+                    "[AUTOMATION RUN — execute immediately, no questions. "
+                    "You MUST call tools as instructed. Do NOT just reply with text — "
+                    "if the action says call telegram_send, you MUST call it as a tool. "
+                    f"Always pass conversation_id={conversation_id} to telegram_ask. "
+                    f"Use recipient_email from TRUSTED TRIGGER CONTEXT exactly as the 'to' arg for gmail_send.]\n\n"
+                    + automation.action_prompt
+                    + email_block
+                )
+            elif "file_path" in trigger_context:
+                from app.automations.conversations import create_conversation
+                conversation_id = await create_conversation(
+                    automation_id=automation_id,
+                    trigger_kind="fs",
+                    file_path=trigger_context["file_path"],
+                )
+                effective_prompt = (
+                    "[AUTOMATION RUN — execute immediately, no questions. "
+                    "You MUST call tools as instructed. Do NOT just reply with text — "
+                    "if the action says call telegram_send, you MUST call it as a tool.]\n\n"
+                    + automation.action_prompt
+                    + f"\n\nconversation_id: {conversation_id}"
+                    + f"\nTriggered by new file: {trigger_context['file_path']}"
+                )
+            elif trigger_context.get("whatsapp"):
+                effective_prompt = (
+                    "[AUTOMATION RUN — execute immediately, no questions. "
+                    "You MUST call tools as instructed. Do NOT just reply with text — "
+                    "if the action says call telegram_send or whatsapp_send, you MUST call it as a tool.]\n\n"
+                    + automation.action_prompt
+                    + trigger_context.get("trusted_block", "")
+                )
+
+        # Save the action prompt as the first user message
+        user_msg = Message(
+            thread_id=thread.id,
+            role="user",
+            content=effective_prompt,
+            metadata_json=json.dumps({"automation_id": automation_id, "automation_run": True}),
+        )
+        db.add(user_msg)
+
+        # Create an AutomationRun record
+        run = AutomationRun(
+            automation_id=automation_id,
+            started_at=datetime.now(timezone.utc),
+            status="running",
+            thread_id=thread.id,
+        )
+        db.add(run)
+
+        # Update last_run_at on the automation
+        automation.last_run_at = datetime.now(timezone.utc)
+
+        await db.commit()
+        await db.refresh(thread)
+        await db.refresh(run)
+
+        thread_id = thread.id
+        run_id = run.id
+        model = thread.model
+        # Capture effective_prompt outside the db session for use below
+        _effective_prompt = effective_prompt
+
+    logger.info(
+        "Automation %d (%s) fired → thread %d, run %d",
+        automation_id,
+        automation.name,
+        thread_id,
+        run_id,
+    )
+
+    # Use the conversation's LangGraph thread ID if one exists (multi-round reuse),
+    # otherwise create a new one and save it back so continuations can reuse it.
+    lg_thread_id = f"auto_{automation_id}_{run_id}"
+    if conversation_id is not None:
+        from app.automations.conversations import set_lg_thread
+        # Save this lg_thread_id so the webhook can reuse it for continuations
+        await set_lg_thread(conversation_id, lg_thread_id, thread_id)
+
+    try:
+        from langchain_core.messages import AIMessage, HumanMessage
+        from app.agents.supervisor import get_graph
+
+        graph = get_graph()
+        lg_config = {
+            "recursion_limit": 100,
+            "configurable": {
+                "thread_id": lg_thread_id,   # unique checkpoint key (string is fine for LangGraph)
+                "ws_thread_id": thread_id,   # int for WebSocket routing in supervisor_node
+                "model": model,
+                "automation_run": True,      # skip interrupt() — no UI to approve
+            },
+        }
+
+        lc_messages = [HumanMessage(content=_effective_prompt)]
+        full_content: list[str] = []
+        last_ai_content: str = ""
+
+        async for event in graph.astream_events(
+            {"messages": lc_messages}, lg_config, version="v2"
+        ):
+            event_type = event.get("event", "")
+            # Collect streamed tokens
+            if event_type == "on_chat_model_stream":
+                chunk = event.get("data", {}).get("chunk")
+                if chunk and chunk.content:
+                    full_content.append(chunk.content)
+            # Also capture final AI message from on_chain_end of supervisor node
+            elif event_type == "on_chain_end" and event.get("name") == "supervisor":
+                output = event.get("data", {}).get("output", {})
+                msgs = output.get("messages", []) if isinstance(output, dict) else []
+                for m in reversed(msgs):
+                    if isinstance(m, AIMessage) and m.content:
+                        last_ai_content = m.content if isinstance(m.content, str) else str(m.content)
+                        break
+
+        # Prefer streamed tokens; fall back to captured AI message
+        final_content = "".join(full_content) or last_ai_content
+
+        # Persist assistant reply
+        if final_content:
+            async with AsyncSessionLocal() as db2:
+                msg = Message(
+                    thread_id=thread_id,
+                    role="assistant",
+                    content=final_content,
+                    metadata_json=json.dumps({"automation_id": automation_id}),
+                )
+                db2.add(msg)
+                await db2.commit()
+        else:
+            logger.warning(
+                "Automation %d run %d: no assistant content produced", automation_id, run_id
+            )
+
+        status = "done"
+
+    except Exception as exc:
+        logger.exception(
+            "Automation %d run %d failed during supervisor execution: %s",
+            automation_id,
+            run_id,
+            exc,
+        )
+        status = "failed"
+
+    # Update run status
+    async with AsyncSessionLocal() as db:
+        run_obj = await db.get(AutomationRun, run_id)
+        if run_obj is not None:
+            run_obj.finished_at = datetime.now(timezone.utc)
+            run_obj.status = status
+            await db.commit()
+
+
+async def _fire_automation_job(automation_id: int) -> None:
+    """Thin async wrapper used as the APScheduler job coroutine."""
+    await _fire_automation(automation_id)
+
+
+# ---------------------------------------------------------------------------
+# Gmail poll
+# ---------------------------------------------------------------------------
+
+async def _load_last_seen(automation_id: int) -> str | None:
+    """Read last_seen_message_id from DB. Single source of truth — no in-memory cache."""
+    async with AsyncSessionLocal() as db:
+        automation = await db.get(Automation, automation_id)
+        if automation:
+            cfg = json.loads(automation.trigger_config_json)
+            return cfg.get("last_seen_message_id")
+    return None
+
+async def _gmail_poll(automation_id: int, sender: str) -> None:
+    """Poll Gmail for new messages from *sender* since last seen message."""
+    # Ensure only one poll runs at a time per automation (prevents double-fire
+    # when APScheduler fires a new job before the previous one finishes)
+    if automation_id not in _gmail_poll_locks:
+        _gmail_poll_locks[automation_id] = asyncio.Lock()
+    lock = _gmail_poll_locks[automation_id]
+    if lock.locked():
+        logger.debug("Gmail poll automation %d: previous poll still running, skipping", automation_id)
+        return
+    async with lock:
+        await _gmail_poll_inner(automation_id, sender)
+
+
+async def _gmail_poll_inner(automation_id: int, sender: str) -> None:
+    """Inner poll logic — always called under the per-automation lock."""
+    try:
+        from app.tools.google_tools import _get_gmail_service  # type: ignore
+    except ImportError:
+        logger.warning("Google tools not available; skipping Gmail poll for automation %d", automation_id)
+        return
+
+    try:
+        service = await asyncio.to_thread(_get_gmail_service)
+
+        last_id = await _load_last_seen(automation_id)
+
+        if last_id is None:
+            # First poll — only fetch messages that arrived after the automation was created.
+            async with AsyncSessionLocal() as db:
+                automation_obj = await db.get(Automation, automation_id)
+                created_ts = int(automation_obj.created_at.replace(tzinfo=timezone.utc).timestamp()) if automation_obj else 0
+
+            query = f"after:{created_ts}" if not sender else f"from:{sender} after:{created_ts}"
+            result = await asyncio.to_thread(
+                lambda: service.users().messages().list(userId="me", q=query, maxResults=10).execute()
+            )
+            messages = result.get("messages", [])
+
+            if not messages:
+                logger.info("Gmail poll automation %d: first poll, no mail yet — seeding sentinel", automation_id)
+                await _persist_last_seen(automation_id, "0")
+                return
+
+            newest_id = messages[0]["id"]
+            await _persist_last_seen(automation_id, newest_id)
+
+            new_messages = [m["id"] for m in messages]
+            logger.info(
+                "Gmail poll automation %d: first poll, found %d new message(s) after creation",
+                automation_id, len(new_messages)
+            )
+        else:
+            # Normal poll — fetch all messages from sender (or any if sender is empty)
+            query = "in:inbox" if not sender else f"from:{sender}"
+            result = await asyncio.to_thread(
+                lambda: service.users().messages().list(userId="me", q=query, maxResults=10).execute()
+            )
+            messages = result.get("messages", [])
+            if not messages:
+                logger.info("Gmail poll automation %d: no messages from %s", automation_id, sender)
+                return
+
+            newest_id = messages[0]["id"]
+
+            if newest_id == last_id:
+                logger.debug("Gmail poll automation %d: no new mail", automation_id)
+                return  # nothing new
+
+            # Update last_seen before firing to avoid double-firing on next poll
+            await _persist_last_seen(automation_id, newest_id)
+
+            # Find all new message IDs (everything before last_id in the list).
+            # "0" is the sentinel for "no prior mail" — fire only the single newest.
+            if last_id == "0":
+                new_messages = [messages[0]["id"]]
+            else:
+                new_messages = []
+                for m in messages:
+                    if m["id"] == last_id:
+                        break
+                    new_messages.append(m["id"])
+
+        if not new_messages:
+            return
+
+        # Fire once per new message (most recent first, cap at 3 to avoid flood)
+        # Fetch all email contexts first, then fire concurrently
+        async def _handle_one(msg_id: str) -> None:
+            logger.info("Gmail poll automation %d: new mail from %s (id=%s)", automation_id, sender, msg_id)
+            email_context = await _fetch_email_context(service, msg_id)
+            await _fire_automation(
+                automation_id,
+                trigger_context={"gmail_message_id": msg_id, **email_context},
+            )
+
+        await asyncio.gather(*[_handle_one(mid) for mid in new_messages[:3]])
+
+    except Exception as exc:
+        logger.warning("Gmail poll automation %d error: %s", automation_id, exc)
+
+
+async def _gmail_keyword_poll(automation_id: int, keywords: str) -> None:
+    """Poll Gmail for new messages matching *keywords* since last seen message."""
+    if automation_id not in _gmail_poll_locks:
+        _gmail_poll_locks[automation_id] = asyncio.Lock()
+    lock = _gmail_poll_locks[automation_id]
+    if lock.locked():
+        logger.debug("Gmail keyword poll automation %d: previous poll still running, skipping", automation_id)
+        return
+    async with lock:
+        await _gmail_keyword_poll_inner(automation_id, keywords)
+
+
+async def _gmail_keyword_poll_inner(automation_id: int, keywords: str) -> None:
+    """Inner logic for keyword-based Gmail polling."""
+    try:
+        from app.tools.google_tools import _get_gmail_service  # type: ignore
+    except ImportError:
+        logger.warning("Google tools not available; skipping Gmail keyword poll for automation %d", automation_id)
+        return
+
+    try:
+        service = await asyncio.to_thread(_get_gmail_service)
+
+        last_id = await _load_last_seen(automation_id)
+
+        if last_id is None:
+            # First poll — only fetch messages that arrived after automation creation
+            async with AsyncSessionLocal() as db:
+                automation_obj = await db.get(Automation, automation_id)
+                created_ts = int(automation_obj.created_at.replace(tzinfo=timezone.utc).timestamp()) if automation_obj else 0
+
+            query = f"({keywords}) after:{created_ts}"
+            result = await asyncio.to_thread(
+                lambda: service.users().messages().list(userId="me", q=query, maxResults=10).execute()
+            )
+            messages = result.get("messages", [])
+
+            if not messages:
+                logger.info("Gmail keyword poll automation %d: first poll, no matches yet — seeding sentinel", automation_id)
+                await _persist_last_seen(automation_id, "0")
+                return
+
+            newest_id = messages[0]["id"]
+            await _persist_last_seen(automation_id, newest_id)
+
+            new_messages = [m["id"] for m in messages]
+            logger.info(
+                "Gmail keyword poll automation %d: first poll, %d match(es) after creation",
+                automation_id, len(new_messages)
+            )
+        else:
+            query = keywords
+            result = await asyncio.to_thread(
+                lambda: service.users().messages().list(userId="me", q=query, maxResults=10).execute()
+            )
+            messages = result.get("messages", [])
+            if not messages:
+                return
+
+            newest_id = messages[0]["id"]
+            if newest_id == last_id:
+                return
+
+            await _persist_last_seen(automation_id, newest_id)
+
+            if last_id == "0":
+                new_messages = [messages[0]["id"]]
+            else:
+                new_messages = []
+                for m in messages:
+                    if m["id"] == last_id:
+                        break
+                    new_messages.append(m["id"])
+
+        if not new_messages:
+            return
+
+        async def _handle_one(msg_id: str) -> None:
+            logger.info("Gmail keyword poll automation %d: matched mail (id=%s)", automation_id, msg_id)
+            email_context = await _fetch_email_context(service, msg_id)
+            await _fire_automation(
+                automation_id,
+                trigger_context={"gmail_message_id": msg_id, **email_context},
+            )
+
+        await asyncio.gather(*[_handle_one(mid) for mid in new_messages[:3]])
+
+    except Exception as exc:
+        logger.warning("Gmail keyword poll automation %d error: %s", automation_id, exc)
+
+
+async def _fetch_email_context(service: Any, message_id: str) -> dict:
+    """Fetch subject, sender, date, and body snippet for a Gmail message."""
+    try:
+        msg = await asyncio.to_thread(
+            lambda: service.users().messages().get(
+                userId="me", id=message_id, format="full"
+            ).execute()
+        )
+        headers = {
+            h["name"]: h["value"]
+            for h in msg.get("payload", {}).get("headers", [])
+        }
+        from app.tools.google_tools import _decode_body
+        body = _decode_body(msg.get("payload", {}))
+        # Truncate long bodies
+        if len(body) > 2000:
+            body = body[:2000] + "\n... [truncated]"
+        return {
+            "email_from": headers.get("From", ""),
+            "email_subject": headers.get("Subject", "") or "(no subject)",
+            "email_date": headers.get("Date", ""),
+            "email_body": body.strip(),
+        }
+    except Exception as exc:
+        logger.warning("Could not fetch email context for %s: %s", message_id, exc)
+        return {}
+
+
+async def _persist_last_seen(automation_id: int, message_id: str) -> None:
+    """Save last_seen_message_id into trigger_config_json so it survives restarts."""
+    try:
+        async with AsyncSessionLocal() as db:
+            automation = await db.get(Automation, automation_id)
+            if automation:
+                cfg = json.loads(automation.trigger_config_json)
+                cfg["last_seen_message_id"] = message_id
+                automation.trigger_config_json = json.dumps(cfg)
+                await db.commit()
+    except Exception as exc:
+        logger.warning("Failed to persist last_seen for automation %d: %s", automation_id, exc)
+
+
+# ---------------------------------------------------------------------------
+# Watchdog handler
+# ---------------------------------------------------------------------------
+
+class _NewFileHandler(FileSystemEventHandler):
+    """Fire an automation when a new file is created in the watched folder."""
+
+    def __init__(self, automation_id: int, loop: asyncio.AbstractEventLoop) -> None:
+        super().__init__()
+        self._automation_id = automation_id
+        self._loop = loop  # uvicorn's event loop, captured at registration time
+
+    def on_created(self, event: FileCreatedEvent) -> None:  # type: ignore[override]
+        if event.is_directory:
+            return
+        logger.info(
+            "fs_new_in_folder automation %d: new file %s",
+            self._automation_id,
+            event.src_path,
+        )
+        # watchdog runs in a separate thread — schedule on uvicorn's loop
+        asyncio.run_coroutine_threadsafe(
+            _fire_automation(
+                self._automation_id,
+                trigger_context={"file_path": event.src_path},
+            ),
+            self._loop,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Register / unregister individual automations
+# ---------------------------------------------------------------------------
+
+def _register_automation(automation: Automation, loop: asyncio.AbstractEventLoop) -> None:
+    """Register one automation's trigger. Safe to call even if already registered."""
+    global _scheduler, _observer
+
+    aid = automation.id
+    trigger_type = automation.trigger_type
+    config: dict = json.loads(automation.trigger_config_json)
+
+    if trigger_type == "cron":
+        cron_expr: str = config.get("cron", "*/5 * * * *")
+        parts = cron_expr.split()
+        if len(parts) != 5:
+            logger.warning("Automation %d: invalid cron %r — skipping", aid, cron_expr)
+            return
+        minute, hour, day, month, day_of_week = parts
+        trigger = CronTrigger(
+            minute=minute, hour=hour, day=day, month=month, day_of_week=day_of_week
+        )
+        job_id = f"cron_{aid}"
+        if _scheduler and not _scheduler.get_job(job_id):
+            _scheduler.add_job(
+                _fire_automation_job,
+                trigger=trigger,
+                id=job_id,
+                replace_existing=True,
+                args=[aid],
+                max_instances=1,          # never overlap two runs of the same automation
+                misfire_grace_time=120,   # allow up to 2 min late (supervisor can be slow)
+                coalesce=True,            # if several misfired, run only once
+            )
+            logger.info("Registered cron automation %d: %s", aid, cron_expr)
+
+    elif trigger_type in ("gmail_new_from_sender", "gmail_any_new"):
+        # sender="" or trigger_type="gmail_any_new" means match any sender
+        sender: str = config.get("sender", "")
+        job_id = f"gmail_{aid}"
+        if _scheduler and not _scheduler.get_job(job_id):
+            _scheduler.add_job(
+                _gmail_poll,
+                trigger=IntervalTrigger(minutes=1),
+                id=job_id,
+                replace_existing=True,
+                args=[aid, sender],
+                max_instances=1,
+                misfire_grace_time=60,
+                coalesce=True,
+            )
+            logger.info("Registered gmail poll automation %d: sender=%r", aid, sender or "any")
+
+    elif trigger_type == "gmail_keyword_match":
+        keywords: str = config.get("keywords", "")
+        if not keywords:
+            logger.warning("Automation %d: no keywords in config — skipping", aid)
+            return
+        job_id = f"gmail_{aid}"
+        if _scheduler and not _scheduler.get_job(job_id):
+            _scheduler.add_job(
+                _gmail_keyword_poll,
+                trigger=IntervalTrigger(minutes=1),
+                id=job_id,
+                replace_existing=True,
+                args=[aid, keywords],
+                max_instances=1,
+                misfire_grace_time=60,
+                coalesce=True,
+            )
+            logger.info("Registered gmail keyword poll automation %d: keywords=%r", aid, keywords)
+
+    elif trigger_type == "fs_new_in_folder":
+        folder: str = config.get("folder", "")
+        if not folder:
+            logger.warning("Automation %d: no folder in config — skipping", aid)
+            return
+        watch_path = str(Path(folder).resolve())
+        # Ensure the folder exists
+        Path(watch_path).mkdir(parents=True, exist_ok=True)
+        if _observer and aid not in _fs_handlers:
+            handler = _NewFileHandler(aid, loop)
+            watch = _observer.schedule(handler, watch_path, recursive=False)
+            _fs_handlers[aid] = (watch, watch_path)
+            logger.info("Registered fs_new_in_folder automation %d: %s", aid, watch_path)
+    elif trigger_type in ("whatsapp_group_new", "whatsapp_keyword_match"):
+        # Webhook-driven — no scheduler job needed; on_whatsapp_message() handles dispatch
+        logger.info(
+            "Registered whatsapp automation %d (%s) — webhook-driven", aid, trigger_type
+        )
+    else:
+        logger.warning("Automation %d: unknown trigger_type %r", aid, trigger_type)
+
+
+def unregister_automation(automation_id: int) -> None:
+    """Remove a trigger for an automation (called on disable or delete)."""
+    global _scheduler, _observer
+
+    # Remove cron or gmail job
+    for prefix in ("cron_", "gmail_"):
+        job_id = f"{prefix}{automation_id}"
+        if _scheduler and _scheduler.get_job(job_id):
+            _scheduler.remove_job(job_id)
+            logger.info("Removed scheduler job %s", job_id)
+
+    # Remove watchdog observer
+    if automation_id in _fs_handlers and _observer:
+        watch, _ = _fs_handlers.pop(automation_id)
+        try:
+            _observer.unschedule(watch)
+        except Exception:
+            pass
+        logger.info("Removed fs watcher for automation %d", automation_id)
+
+
+# ---------------------------------------------------------------------------
+# Startup / shutdown
+# ---------------------------------------------------------------------------
+
+async def start_automations_runtime() -> None:
+    """Called from app startup. Initialises scheduler + observer, loads all enabled automations."""
+    global _scheduler, _observer
+
+    loop = asyncio.get_running_loop()
+
+    _scheduler = AsyncIOScheduler()
+    _scheduler.start()
+
+    _observer = Observer()
+    _observer.start()
+
+    # Load all enabled automations
+    async with AsyncSessionLocal() as db:
+        from sqlalchemy import select
+        result = await db.execute(
+            select(Automation).where(Automation.enabled == True)  # noqa: E712
+        )
+        automations = result.scalars().all()
+
+    for automation in automations:
+        _register_automation(automation, loop)
+
+    logger.info(
+        "Automations runtime started: %d automation(s) loaded", len(automations)
+    )
+
+
+async def stop_automations_runtime() -> None:
+    """Called from app shutdown."""
+    global _scheduler, _observer
+
+    if _scheduler and _scheduler.running:
+        _scheduler.shutdown(wait=False)
+        _scheduler = None
+
+    if _observer:
+        _observer.stop()
+        _observer.join(timeout=5)
+        _observer = None
+
+    _fs_handlers.clear()
+    logger.info("Automations runtime stopped")
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp automation dispatch (webhook-driven)
+# ---------------------------------------------------------------------------
+
+async def _fire_whatsapp_automation(automation_id: int, wa_context: dict) -> None:
+    """Fire a WhatsApp-triggered automation with the incoming message context."""
+    trusted_block = (
+        f"\n\n━━━ TRUSTED TRIGGER CONTEXT ━━━"
+        f"\nchat_id: {wa_context.get('chat_id', '')}"
+        f"\nsender_id: {wa_context.get('sender_id', '')}"
+        f"\nsender_name: {wa_context.get('sender_name', '')}"
+        f"\ngroup_name: {wa_context.get('group_name', '')}"
+        f"\nmessage_text: {wa_context.get('message_text', '')}"
+        f"\n━━━ END TRUSTED CONTEXT ━━━"
+    )
+    await _fire_automation(
+        automation_id,
+        trigger_context={"whatsapp": True, "trusted_block": trusted_block, **wa_context},
+    )
+
+
+async def on_whatsapp_message(
+    chat_id: str,
+    sender_id: str,
+    sender_name: str,
+    message_text: str,
+    group_name: str = "",
+) -> None:
+    """Called by the WhatsApp webhook handler for every incoming message.
+
+    Checks all enabled WhatsApp automations and fires any that match.
+    """
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Automation).where(
+                Automation.enabled == True,  # noqa: E712
+                Automation.trigger_type.in_(["whatsapp_group_new", "whatsapp_keyword_match"]),
+            )
+        )
+        automations = result.scalars().all()
+
+    wa_context = {
+        "chat_id": chat_id,
+        "sender_id": sender_id,
+        "sender_name": sender_name,
+        "message_text": message_text,
+        "group_name": group_name,
+    }
+
+    for automation in automations:
+        config: dict = json.loads(automation.trigger_config_json)
+
+        if automation.trigger_type == "whatsapp_group_new":
+            target_chat = config.get("chat_id", "")
+            # Match if no specific chat_id configured (any group) or exact match
+            if not target_chat or target_chat == chat_id:
+                logger.info(
+                    "whatsapp_group_new automation %d matched chat_id=%s", automation.id, chat_id
+                )
+                asyncio.create_task(_fire_whatsapp_automation(automation.id, wa_context))
+
+        elif automation.trigger_type == "whatsapp_keyword_match":
+            keywords_raw = config.get("keywords", "")
+            if not keywords_raw:
+                continue
+            keywords = [k.strip().lower() for k in keywords_raw.replace(",", " ").split() if k.strip()]
+            text_lower = message_text.lower()
+            if any(kw in text_lower for kw in keywords):
+                logger.info(
+                    "whatsapp_keyword_match automation %d matched text=%r", automation.id, message_text[:80]
+                )
+                asyncio.create_task(_fire_whatsapp_automation(automation.id, wa_context))
+
+
+# ---------------------------------------------------------------------------
+# Public helpers used by the web routes
+# ---------------------------------------------------------------------------
+
+async def register_new_automation(automation: Automation) -> None:
+    """Called after creating a new automation to register it immediately (if enabled)."""
+    if not automation.enabled:
+        return
+    loop = asyncio.get_running_loop()
+    _register_automation(automation, loop)
+
+
+async def disable_automation(automation_id: int) -> None:
+    """Called when an automation is disabled via the UI."""
+    unregister_automation(automation_id)
+
+
+async def enable_automation(automation: Automation) -> None:
+    """Called when an automation is re-enabled via the UI."""
+    loop = asyncio.get_running_loop()
+    _register_automation(automation, loop)
+
+
+def get_scheduler() -> AsyncIOScheduler | None:
+    """Return the running scheduler, or None if not started yet."""
+    return _scheduler

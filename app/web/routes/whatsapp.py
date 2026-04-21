@@ -1,6 +1,7 @@
 """WhatsApp integration routes — webhook, group CRUD, manual send, management UI."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -179,16 +180,15 @@ async def _handle_incoming(body: dict) -> None:
     # Automation trigger
     try:
         from app.automations.runtime import on_whatsapp_message
-        async with AsyncSessionLocal() as db:
-            g_fresh = await db.get(WhatsAppGroup, group.id)
-        if g_fresh:
-            await on_whatsapp_message(g_fresh, {
-                "message_id": message_id,
-                "chat_id": chat_id,
-                "sender_id": sender_id,
-                "sender_name": sender_name,
-                "text": text,
-            })
+        asyncio.get_running_loop().create_task(
+            on_whatsapp_message(
+                chat_id=chat_id,
+                sender_id=sender_id,
+                sender_name=sender_name,
+                message_text=text,
+                group_name=group.name if group else "",
+            )
+        )
     except Exception as exc:
         logger.warning("WhatsApp automation dispatch failed: %s", exc)
 

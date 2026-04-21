@@ -4,7 +4,8 @@ One OpenAI structured-output call converts an NL description into a
 parsed automation spec:
   {
     "name": "<short human name>",
-    "trigger_type": "cron" | "gmail_new_from_sender" | "fs_new_in_folder",
+    "trigger_type": "cron" | "gmail_new_from_sender" | "fs_new_in_folder"
+                  | "whatsapp_group_new" | "whatsapp_keyword_match",
     "trigger_config": { ... },   # depends on trigger_type
     "action_prompt": "<what the supervisor should do when triggered>"
   }
@@ -13,14 +14,20 @@ trigger_config schemas:
   cron              → {"cron": "<cron expression, e.g. '*/1 * * * *'>"}
   gmail_new_from_sender → {"sender": "<email address>"}
   fs_new_in_folder  → {"folder": "<absolute or workspace-relative path>"}
+  whatsapp_group_new    → {"chat_id": "<group chat_id ending in @g.us, or '' for any group>"}
+  whatsapp_keyword_match → {"keywords": "<space/comma separated keywords>"}
 """
 from __future__ import annotations
 
 import json
+from typing import Optional
 
 from openai import AsyncOpenAI
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.config as app_config
+from app.db.models import Skill, UserMemory
 
 _SYSTEM_PROMPT = """\
 Convert a natural-language automation description into a JSON object.
@@ -29,7 +36,7 @@ Output ONLY the JSON — no explanation, no markdown fences.
 ━━━ JSON SCHEMA ━━━
 {{
   "name":           "<short human-readable name, 3-6 words>",
-  "trigger_type":   "cron" | "gmail_new_from_sender" | "fs_new_in_folder",
+  "trigger_type":   "cron" | "gmail_any_new" | "gmail_new_from_sender" | "gmail_keyword_match" | "fs_new_in_folder",
   "trigger_config": {{ ... }},
   "action_prompt":  "<instruction for the AI assistant>"
 }}
@@ -49,14 +56,42 @@ cron:
   - "every monday at 9am" → "0 9 * * 1"
   - "every weekday at 6pm"→ "0 18 * * 1-5"
 
+gmail_any_new:
+  {{}}   (empty config — fires on ANY new email in inbox)
+  Use when user says "any email", "every email", "whenever I get an email", "all emails"
+
 gmail_new_from_sender:
   {{"sender": "<email address>"}}
+  Use only when user specifies a particular sender address or person
+
+gmail_keyword_match:
+  {{"keywords": "<Gmail search query, e.g. 'hackathon OR fest OR competition'>"}}
+  Rules:
+  - Use Gmail search syntax: OR, AND, subject:, from:, etc.
+  - "hackathon" → {{"keywords": "hackathon"}}
+  - "hackathon or coding contest" → {{"keywords": "hackathon OR coding contest"}}
+  - "mail about fees from college" → {{"keywords": "fees subject:fees OR fee"}}
+  - "important mail from HR" → {{"keywords": "from:hr subject:important OR urgent"}}
 
 fs_new_in_folder:
   {{"folder": "<absolute path>"}}
   - If user says a relative path or folder name, prefix with: {workspace}
   - e.g. "inbox" → "{workspace}/inbox"
   - e.g. "mndc_mails" → "{workspace}/mndc_mails"
+
+whatsapp_group_new:
+  {{"chat_id": "<group chat_id ending in @g.us, or empty string for any monitored group>"}}
+  Use when: "when a WhatsApp group message arrives", "monitor my WhatsApp group", "on new WhatsApp message"
+  - If user names a specific group, keep chat_id empty and note the group name in action_prompt
+    (the runtime injects the actual chat_id and message at trigger time)
+  - If user says "any group" or "all groups", set chat_id to ""
+
+whatsapp_keyword_match:
+  {{"keywords": "<space or comma separated keywords>"}}
+  Use when: "when someone mentions X in WhatsApp", "if a WhatsApp message contains Y"
+  - Keywords are matched case-insensitively against incoming message text
+  - "urgent or emergency" → {{"keywords": "urgent emergency"}}
+  - "meeting or standup" → {{"keywords": "meeting standup"}}
 
 ━━━ ACTION PROMPT RULES ━━━
 Write action_prompt as a clear, direct instruction to an AI assistant.
@@ -94,6 +129,36 @@ Do NOT tell the assistant to look for a file — it has the path. Focus on what 
   BAD : "Process the file"
   GOOD: "Read the new file shown above and translate its entire contents to Hindi. Save the translation to the same filename with _hindi appended, inside my workspace."
 
+FOR FS_NEW_IN_FOLDER + telegram_ask:
+A "TRUSTED TRIGGER CONTEXT" block is injected at runtime containing conversation_id and file_path.
+Every telegram_ask MUST carry conversation_id. Reference file_path from the TRUSTED block — never say "the file".
+
+CORRECT action_prompt pattern for fs_new_in_folder + telegram_ask:
+  "Read the TRUSTED TRIGGER CONTEXT block above. Note the conversation_id and file_path.
+   Read the file at file_path. Summarize its contents in 2 sentences.
+   Call telegram_ask with:
+     question: '[filename]: [summary]\n\nWhat should I do with this file?'
+     continuation_prompt: 'The user wants to: [their reply]. The file is at <file_path from
+       TRUSTED TRIGGER CONTEXT block>. Carry out the user's instruction on that file.
+       If you need to show the user something for approval, call save_draft(conversation_id=<id>,
+       draft=<content>) then call telegram_ask again with the same conversation_id.'
+     conversation_id: <the id from the TRUSTED block>"
+
+RULE: Every telegram_ask in every round MUST carry conversation_id so the webhook
+injects the real file_path into the next round's prompt automatically.
+
+FOR WHATSAPP TRIGGERS — a "TRUSTED TRIGGER CONTEXT" block is injected at runtime containing:
+chat_id, sender_id, sender_name, message_text, group_name (for group triggers).
+Do NOT tell the assistant to fetch the message — it already has it. Focus on what to DO with it:
+  BAD : "Read the WhatsApp message and process it"
+  GOOD: "Read the TRUSTED TRIGGER CONTEXT block above. Note the chat_id, sender_name, and message_text.
+         Summarize the message in one sentence and call telegram_send with that summary plus the sender name."
+
+  BAD : "Reply to the WhatsApp message"
+  GOOD: "Read the TRUSTED TRIGGER CONTEXT block above. Note the message_text and sender_name.
+         Determine if the message needs a reply. If yes, call whatsapp_send with chat_id from the
+         TRUSTED block and an appropriate reply message."
+
 ━━━ TELEGRAM NOTIFICATIONS ━━━
 Two tools are available for Telegram: telegram_send and telegram_ask.
 
@@ -105,19 +170,56 @@ CHOOSING WHICH TO USE:
 - "notify me", "send me a summary", "ping me" → telegram_send
 - "ask me for a reply", "let me review", "ask me before sending", "show me the draft" → telegram_ask
 
-RULE — Never use both in the same action_prompt in a way that creates two back-and-forth rounds.
-
 FOR telegram_ask, the action_prompt must:
-1. Summarize the trigger content (email body, file contents, etc.)
-2. Call telegram_ask with:
-   - question: the summary + what you're asking the user (e.g. "What should I reply?")
-   - continuation_prompt: FULL instructions for what to do with the user's reply.
-     This must be self-contained — include recipient email, original email context, etc.
+1. Read the sender email address and subject from the email header shown above the prompt.
+2. Summarize the trigger content (email body, file contents, etc.)
+3. Call telegram_ask with:
+   - question: the summary + what you're asking the user
+   - continuation_prompt: FULL self-contained instructions, with the REAL sender email and subject
+     substituted in — NOT placeholders like <SENDER_EMAIL>.
 
-EXAMPLE for "if mail comes from X, ask me for a reply then send it":
-  action_prompt: "Read the email above. Summarize it in 3 sentences. Then call telegram_ask with:
-    question: Show the summary then ask 'What should I reply?'
-    continuation_prompt: 'The user replied to an email. Using the user reply below, write a polite professional email and send it to the original sender using gmail_send. Sign as Maharshi.'"
+━━━ GMAIL TRIGGER — USE TRUSTED CONTEXT ━━━
+For gmail triggers, a "TRUSTED TRIGGER CONTEXT" block is injected at runtime containing:
+conversation_id, recipient_email, email_subject, email_body.
+
+Your action_prompt MUST:
+1. Reference recipient_email from the TRUSTED block — do NOT hardcode it
+2. Pass conversation_id={conversation_id} to EVERY telegram_ask call so the
+   webhook can inject sender/draft/subject automatically in each round
+3. When calling gmail_send, use recipient_email from the TRUSTED block exactly —
+   never a placeholder, never example.com, never a hallucination
+4. Before showing a draft via telegram_ask, call save_draft(conversation_id=<id>, draft=<full text>)
+   so the next round can retrieve it from the TRUSTED CONVERSATION CONTEXT block
+
+CORRECT action_prompt pattern for gmail + telegram_ask:
+  "Read the TRUSTED TRIGGER CONTEXT block above. Note the conversation_id and recipient_email.
+   Summarize email_body in 2 sentences.
+   Call telegram_ask with:
+     question: '[summary]\n\nWhat should I reply? Give me your key points.'
+     continuation_prompt: 'Write a professional draft reply based on the user intent after
+       User reply:. Sign as Maharshi. Then call save_draft(conversation_id=<id from TRUSTED
+       CONVERSATION CONTEXT>, draft=<full draft text>). Then call telegram_ask with
+       question=\"Here is the draft reply:\n\n[full draft text]\n\nType OK to send, or tell me
+       what to change.\" and continuation_prompt=\"If user approved: call gmail_send with
+       to=<recipient_email from TRUSTED CONVERSATION CONTEXT block>,
+       subject=<email_subject from that block>, body=<current_draft from that block>.
+       If user wants changes: rewrite draft, call save_draft again, then call telegram_ask again.\"
+       and conversation_id=<same id>.'
+     conversation_id: <the id from the TRUSTED block>"
+
+RULE: Every telegram_ask call in every round MUST carry conversation_id.
+This makes the webhook inject the real sender/subject/draft into the next round's prompt —
+you do NOT need to remember them.
+
+━━━ MULTI-ROUND CONVERSATIONS ━━━
+telegram_ask can chain into another telegram_ask inside the continuation_prompt.
+This enables multi-round flows: ask → draft → show draft → get approval → send.
+
+CRITICAL for continuation_prompt:
+- NEVER hardcode email addresses — use recipient_email from the TRUSTED CONVERSATION CONTEXT block
+- NEVER say "I will call telegram_ask" — actually call it as a tool
+- ALWAYS pass conversation_id on every telegram_ask call
+- ALWAYS call save_draft before showing a draft for approval
 
 Do NOT use telegram_ask if the user did not mention asking/reviewing/approving.
 Do NOT use telegram_send at all if the user did not mention notify/send me/ping me.
@@ -125,8 +227,57 @@ Do NOT use telegram_send at all if the user did not mention notify/send me/ping 
 Output ONLY the JSON object."""
 
 
-async def parse_automation(nl_description: str) -> dict:
+async def _build_context_block(db: Optional[AsyncSession]) -> str:
+    """Fetch memories + enabled skills from the DB and format them for the parser prompt.
+
+    Returns empty string if db is None or there is nothing to inject.
+    """
+    if db is None:
+        return ""
+
+    try:
+        mem_result = await db.execute(select(UserMemory).order_by(UserMemory.created_at.desc()))
+        memories = mem_result.scalars().all()
+    except Exception:
+        memories = []
+
+    try:
+        skill_result = await db.execute(
+            select(Skill).where(Skill.enabled == True).order_by(Skill.name)
+        )
+        skills = skill_result.scalars().all()
+    except Exception:
+        skills = []
+
+    memory_block = "\n".join(f"- {m.content}" for m in memories) or "(none)"
+    skill_block = "\n".join(f"- /{s.name}: {s.trigger_description}" for s in skills) or "(none)"
+
+    return (
+        "━━━ USER MEMORIES (resolve names/teams/places to concrete values) ━━━\n"
+        f"{memory_block}\n\n"
+        "━━━ AVAILABLE SKILLS (reusable procedures the runtime agent can load) ━━━\n"
+        f"{skill_block}\n\n"
+        "RULES:\n"
+        "- If the description references a person/team (e.g. \"my ML team\"), look up USER MEMORIES "
+        "and include the resolved email addresses in the action_prompt. Keep the original name too so "
+        "the runtime can re-check memory if addresses look stale. Example:\n"
+        "  \"Send summary to my ML team (Sanat <sanat@x.com>, Vidhansh <vid@x.com>). "
+        "If these look outdated, call search_memory for 'ML team' before sending.\"\n"
+        "- NEVER invent placeholder emails like ml_team@example.com. If a name can't be resolved from "
+        "memory, keep the raw name in the action_prompt so the runtime agent can ask memory tools.\n"
+        "- If a skill in AVAILABLE SKILLS matches the task, reference it in the action_prompt like:\n"
+        "  \"Load the /<skill_name> skill and follow its steps.\"\n"
+        "  The runtime agent will call read_skill to pull the full procedure.\n"
+        "- Only reference skills that appear in the list — never invent skill names.\n\n"
+    )
+
+
+async def parse_automation(nl_description: str, db: Optional[AsyncSession] = None) -> dict:
     """Call OpenAI to parse *nl_description* into a structured automation spec.
+
+    If *db* is provided, user memories and enabled skills are injected into the
+    prompt so the parser can resolve names (e.g. "my ML team") to real emails
+    and reference existing skill procedures.
 
     Returns a dict with keys: name, trigger_type, trigger_config, action_prompt.
     Raises ValueError if the response cannot be parsed.
@@ -134,12 +285,14 @@ async def parse_automation(nl_description: str) -> dict:
     client = AsyncOpenAI(api_key=app_config.OPENAI_API_KEY)
 
     system = _SYSTEM_PROMPT.replace("{workspace}", str(app_config.WORKSPACE_DIR))
+    context_block = await _build_context_block(db)
+    user_content = f"{context_block}AUTOMATION DESCRIPTION:\n{nl_description}" if context_block else nl_description
 
     response = await client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": system},
-            {"role": "user", "content": nl_description},
+            {"role": "user", "content": user_content},
         ],
         temperature=0,
         response_format={"type": "json_object"},
@@ -157,7 +310,7 @@ async def parse_automation(nl_description: str) -> dict:
     if missing:
         raise ValueError(f"Parsed automation missing keys: {missing}. Got: {parsed}")
 
-    valid_types = {"cron", "gmail_new_from_sender", "fs_new_in_folder"}
+    valid_types = {"cron", "gmail_any_new", "gmail_new_from_sender", "gmail_keyword_match", "fs_new_in_folder", "whatsapp_group_new", "whatsapp_keyword_match"}
     if parsed["trigger_type"] not in valid_types:
         raise ValueError(
             f"Invalid trigger_type {parsed['trigger_type']!r}. Must be one of {valid_types}"

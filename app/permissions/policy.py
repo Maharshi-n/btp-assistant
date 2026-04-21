@@ -182,6 +182,18 @@ def policy_whatsapp_send(args: dict) -> Decision:
     return "ask"
 
 
+def policy_whatsapp_send_file(args: dict) -> Decision:
+    return "ask"
+
+
+def policy_whatsapp_read_messages(args: dict) -> Decision:
+    return "auto"
+
+
+def policy_whatsapp_get_groups(args: dict) -> Decision:
+    return "auto"
+
+
 # ---------------------------------------------------------------------------
 # RAG tools
 # ---------------------------------------------------------------------------
@@ -223,6 +235,9 @@ _POLICY_TABLE: dict[str, object] = {
     "telegram_send": policy_telegram_send,
     "telegram_ask": policy_telegram_ask,
     "whatsapp_send": policy_whatsapp_send,
+    "whatsapp_send_file": policy_whatsapp_send_file,
+    "whatsapp_read_messages": policy_whatsapp_read_messages,
+    "whatsapp_get_groups": policy_whatsapp_get_groups,
     # Skills — read-only, always auto
     "read_skill": lambda args: "auto",
     "save_draft": lambda args: "auto",

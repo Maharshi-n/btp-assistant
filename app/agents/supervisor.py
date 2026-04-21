@@ -1232,9 +1232,11 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
     )
 
     # Per-turn reset: bounds are a budget for the CURRENT user turn, not a
-    # lifetime counter for the thread. If the latest message is a HumanMessage
-    # with no AIMessage after it yet, we're at the start of a new turn —
-    # reset the counters so prior turns' usage doesn't block this one.
+    # lifetime counter for the thread. Reset whenever the latest message is a
+    # HumanMessage — that always marks the start of a new turn.
+    # start_time resets unconditionally so a slow prior turn never poisons the
+    # 600s budget of the next one (e.g. after a permission-card approval where
+    # an AIMessage already exists after the HumanMessage).
     msgs = state.get("messages") or []
     last_human_idx = next(
         (i for i in range(len(msgs) - 1, -1, -1) if isinstance(msgs[i], HumanMessage)),
@@ -1249,6 +1251,15 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
                 recursion_depth=0,
                 agent_count=1,
                 tool_call_count=0,
+                start_time=time.monotonic(),
+            )
+        else:
+            # New turn but AI already responded (e.g. post-approval resume) —
+            # keep counters but always refresh the clock so 600s is per-turn.
+            ctx = RunContext(
+                recursion_depth=ctx.get("recursion_depth", 0),
+                agent_count=ctx.get("agent_count", 1),
+                tool_call_count=ctx.get("tool_call_count", 0),
                 start_time=time.monotonic(),
             )
 

@@ -14,7 +14,7 @@ from app.agents.supervisor import init_supervisor, shutdown_supervisor
 from app.automations.runtime import start_automations_runtime, stop_automations_runtime
 import app.config as app_config
 from app.db.engine import get_db, init_db
-from app.db.models import Automation, AutomationConversation, AutomationRun, AutoMemoryConfig, MCPServer, MCPTool, Message, OAuthToken, ScheduledTask, ScheduledTaskRun, Skill, TelegramCommand, TelegramPendingFile, TelegramPendingFileItem, TelegramPendingReply, Thread, User, UserMemory, WorkspaceLocation  # noqa: F401 — ensures models are registered
+from app.db.models import Automation, AutomationConversation, AutomationRun, AutoMemoryConfig, MCPServer, MCPTool, Message, OAuthToken, ScheduledTask, ScheduledTaskRun, Skill, TelegramCommand, TelegramPendingFile, TelegramPendingFileItem, TelegramPendingReply, Thread, User, UserMemory, WhatsAppGroup, WhatsAppMessage, WorkspaceLocation  # noqa: F401 — ensures models are registered
 from app.db.seed import seed_admin, seed_primary_workspace
 from app.web.deps import NotAuthenticated, require_user
 from app.web.routes.audit import router as audit_router
@@ -32,6 +32,7 @@ from app.web.routes.settings import router as settings_router
 from app.web.routes.telegram_commands import router as telegram_commands_router
 from app.web.routes.ws import router as ws_router
 from app.web.routes.workspaces import router as workspaces_router
+from app.web.routes.whatsapp import router as whatsapp_router
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -75,6 +76,7 @@ app.include_router(connectors_router)
 app.include_router(tasks_router)
 app.include_router(telegram_commands_router)
 app.include_router(workspaces_router)
+app.include_router(whatsapp_router)
 
 
 @app.exception_handler(NotAuthenticated)

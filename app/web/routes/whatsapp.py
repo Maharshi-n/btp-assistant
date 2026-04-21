@@ -44,10 +44,18 @@ async def whatsapp_page(request: Request, _user=Depends(require_user), db: Async
     recent_messages = msgs_result.scalars().all()
 
     status = {"stateInstance": "unknown"}
+    webhook_base_url = ""
     client = get_green_client()
     if client:
         try:
             status = await client.get_state()
+        except Exception:
+            pass
+        try:
+            settings = await client._get("getSettings")
+            full_url: str = settings.get("webhookUrl", "")
+            if full_url.endswith("/webhook/whatsapp"):
+                webhook_base_url = full_url[: -len("/webhook/whatsapp")]
         except Exception:
             pass
 
@@ -57,6 +65,7 @@ async def whatsapp_page(request: Request, _user=Depends(require_user), db: Async
         "recent_messages": recent_messages,
         "instance_status": status.get("stateInstance", "unknown"),
         "whatsapp_enabled": app_config.whatsapp_enabled(),
+        "webhook_base_url": webhook_base_url,
     })
 
 
@@ -406,3 +415,33 @@ async def whatsapp_status(_user=Depends(require_user)):
         return await client.get_state()
     except GreenAPIError as exc:
         return {"stateInstance": "error", "error": str(exc)}
+
+
+class WebhookUrlPayload(BaseModel):
+    base_url: str
+
+
+@router.post("/api/whatsapp/webhook-url")
+async def set_webhook_url(payload: WebhookUrlPayload, _user=Depends(require_user)):
+    """Push a new webhook URL + token to Green API and reboot the instance."""
+    client = get_green_client()
+    if client is None:
+        raise HTTPException(status_code=503, detail="WhatsApp not configured")
+
+    base = payload.base_url.rstrip("/")
+    webhook_url = f"{base}/webhook/whatsapp"
+    token = app_config.GREEN_API_WEBHOOK_TOKEN
+
+    try:
+        await client._post("setSettings", {
+            "webhookUrl": webhook_url,
+            "webhookUrlToken": token,
+            "incomingWebhook": "yes",
+            "outgoingWebhook": "yes",
+            "outgoingAPIMessageWebhook": "yes",
+        })
+        await client._get("reboot")
+    except GreenAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    return {"ok": True, "webhook_url": webhook_url}

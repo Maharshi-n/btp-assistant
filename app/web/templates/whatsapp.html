@@ -7,9 +7,16 @@
   <!-- Header + status -->
   <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
     <div class="flex items-center justify-between">
-      <div>
-        <h1 class="text-xl font-semibold text-gray-900">WhatsApp</h1>
-        <p class="text-sm text-gray-500 mt-0.5">Green API integration</p>
+      <div class="flex items-center gap-3">
+        <a href="/" class="text-gray-400 hover:text-gray-600 transition-colors" title="Back to chat">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+          </svg>
+        </a>
+        <div>
+          <h1 class="text-xl font-semibold text-gray-900">WhatsApp</h1>
+          <p class="text-sm text-gray-500 mt-0.5">Green API integration</p>
+        </div>
       </div>
       <span id="status-badge"
             class="px-3 py-1 rounded-full text-sm font-medium
@@ -24,6 +31,25 @@
       Set GREEN_API_INSTANCE_ID and GREEN_API_TOKEN in your .env to enable WhatsApp.
     </p>
     {% endif %}
+  </div>
+
+  <!-- Webhook URL -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+    <h2 class="text-base font-semibold text-gray-800 mb-1">Webhook URL</h2>
+    <p class="text-xs text-gray-500 mb-3">
+      Set this in Green API so it can deliver messages to RAION.
+      Paste your ngrok (or public) base URL below — the path <code class="font-mono bg-gray-100 px-1 rounded">/webhook/whatsapp</code> is added automatically.
+    </p>
+    <form onsubmit="saveWebhook(event)" class="flex gap-2">
+      <input id="ngrok-url" type="url" placeholder="https://abc123.ngrok-free.app"
+             value="{{ webhook_base_url or '' }}"
+             class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+      <button type="submit"
+              class="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap">
+        Save &amp; Apply
+      </button>
+    </form>
+    <p id="webhook-status" class="text-xs mt-2 hidden"></p>
   </div>
 
   <!-- Add group -->
@@ -147,6 +173,35 @@
 </div>
 
 <script>
+async function saveWebhook(e) {
+  e.preventDefault();
+  const base = document.getElementById('ngrok-url').value.trim().replace(/\/$/, '');
+  const el = document.getElementById('webhook-status');
+  el.className = 'text-xs mt-2';
+  el.textContent = 'Saving…';
+  el.classList.remove('hidden');
+  try {
+    const r = await fetch('/api/whatsapp/webhook-url', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({base_url: base})
+    });
+    const d = await r.json();
+    if (r.ok) {
+      el.classList.add('text-green-600');
+      el.classList.remove('text-red-600');
+      el.textContent = 'Saved! Webhook set to: ' + base + '/webhook/whatsapp';
+    } else {
+      el.classList.add('text-red-600');
+      el.classList.remove('text-green-600');
+      el.textContent = d.detail || 'Failed';
+    }
+  } catch(err) {
+    el.classList.add('text-red-600');
+    el.textContent = 'Error: ' + err.message;
+  }
+}
+
 async function addGroup(e) {
   e.preventDefault();
   const chatId = document.getElementById('new-chat-id').value.trim();
@@ -222,5 +277,6 @@ async function sendMessage(e) {
 [data-theme="dark"] #groups-tbody tr:hover { background-color: #1e293b !important; }
 [data-theme="dark"] #groups-tbody td       { color: #e2e8f0 !important; }
 [data-theme="dark"] #status-badge.bg-gray-100 { background-color: #334155 !important; color: #94a3b8 !important; }
+[data-theme="dark"] #ngrok-url { background-color: #1e293b !important; color: #e2e8f0 !important; border-color: #475569 !important; }
 </style>
 {% endblock %}

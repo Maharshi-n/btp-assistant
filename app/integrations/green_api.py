@@ -88,6 +88,42 @@ class GreenAPIClient:
             "caption": caption,
         })
 
+    async def send_file_by_upload(
+        self, chat_id: str, file_path: str, caption: str = ""
+    ) -> dict:
+        """Upload a local file to Green API and send it to chat_id."""
+        import mimetypes
+        from pathlib import Path as _Path
+        p = _Path(file_path)
+        mime, _ = mimetypes.guess_type(str(p))
+        mime = mime or "application/octet-stream"
+        url = self._url("sendFileByUpload")
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    with open(p, "rb") as fh:
+                        resp = await client.post(
+                            url,
+                            data={"chatId": chat_id, "caption": caption},
+                            files={"file": (p.name, fh, mime)},
+                        )
+                if resp.status_code < 500:
+                    if resp.status_code >= 400:
+                        raise GreenAPIError(resp.status_code, resp.text)
+                    return resp.json()
+                if attempt == 0:
+                    await asyncio.sleep(1)
+                    continue
+                raise GreenAPIError(resp.status_code, resp.text)
+            except GreenAPIError:
+                raise
+            except Exception as exc:
+                if attempt == 0:
+                    await asyncio.sleep(1)
+                    continue
+                raise GreenAPIError(0, str(exc)) from exc
+        raise GreenAPIError(0, "unreachable")
+
     async def get_chat_history(self, chat_id: str, count: int = 50) -> list[dict]:
         result = await self._post("getChatHistory", {"chatId": chat_id, "count": count})
         return result if isinstance(result, list) else []

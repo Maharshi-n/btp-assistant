@@ -188,3 +188,22 @@ async def whatsapp_read_messages(chat_id: str, count: int = 20) -> str:
         lines.append(f"[{timestamp}] {sender}: {text}")
 
     return "\n".join(lines)
+
+
+@tool
+async def whatsapp_get_groups() -> str:
+    """List all WhatsApp groups registered in RAION with their chat IDs and names.
+
+    Use this to look up a group's chat_id before calling whatsapp_send or whatsapp_read_messages.
+    """
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(WhatsAppGroup).order_by(WhatsAppGroup.name)
+        )
+        groups = result.scalars().all()
+
+    if not groups:
+        return "No WhatsApp groups registered. Add groups at /whatsapp."
+
+    lines = [f"- {g.name}: {g.chat_id} ({'enabled' if g.enabled else 'disabled'})" for g in groups]
+    return "Registered WhatsApp groups:\n" + "\n".join(lines)

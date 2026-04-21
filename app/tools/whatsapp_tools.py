@@ -116,7 +116,7 @@ async def whatsapp_send_file(chat_id: str, file_path: str, caption: str = "") ->
         group_name = group.name
 
     try:
-        await client.send_file_by_upload(chat_id, file_path, caption)
+        await client.send_file_by_upload(chat_id, str(p), caption)
     except GreenAPIError as exc:
         logger.warning("whatsapp_send_file: API error: %s", exc)
         return f"WhatsApp send file failed: {exc}"

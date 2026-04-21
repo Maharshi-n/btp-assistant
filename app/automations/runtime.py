@@ -817,10 +817,23 @@ async def _fire_whatsapp_smart_reply(automation_id: int, wa_context: dict) -> No
     if reply_text:
         # Fast path: send reply directly without spinning up the full supervisor
         from app.integrations.green_api import get_green_client
+        import uuid as _uuid
+        from app.db.models import WhatsAppMessage as _WAMsg
         client = get_green_client()
         if client:
             try:
                 await client.send_message(chat_id, reply_text)
+                async with AsyncSessionLocal() as _db:
+                    _db.add(_WAMsg(
+                        message_id=f"out_{_uuid.uuid4().hex}",
+                        chat_id=chat_id,
+                        sender_id="agent",
+                        sender_name="RAION",
+                        direction="outgoing",
+                        message_type="text",
+                        text=reply_text,
+                    ))
+                    await _db.commit()
             except Exception as exc:
                 logger.warning("smart_reply direct send failed: %s", exc)
     else:
@@ -893,6 +906,9 @@ async def on_whatsapp_message(
                 asyncio.create_task(_fire_whatsapp_automation(automation.id, wa_context))
 
         elif automation.trigger_type == "whatsapp_smart_reply":
+            # Skip messages sent by the bot itself to prevent potential loops
+            if wa_context.get("sender_id") in ("agent", app_config.GREEN_API_INSTANCE_ID):
+                continue
             target_chat = config.get("chat_id", "")
             if not target_chat or target_chat == chat_id:
                 logger.info(

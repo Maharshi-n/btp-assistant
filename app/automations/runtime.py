@@ -748,6 +748,96 @@ async def _fire_whatsapp_automation(automation_id: int, wa_context: dict) -> Non
     )
 
 
+async def _triage_whatsapp_message(
+    message_text: str,
+    topic_description: str,
+    reply_context: str,
+) -> tuple[bool, str]:
+    """Call gpt-4o-mini to decide if a WhatsApp message matches the topic and what to reply.
+
+    Returns (should_reply, reply_text). reply_text is empty string if should_reply is False.
+    """
+    import json as _json
+    from openai import AsyncOpenAI
+    import app.config as _cfg
+
+    client = AsyncOpenAI(api_key=_cfg.OPENAI_API_KEY)
+    system = (
+        "You are a WhatsApp message triage assistant. "
+        "Given a message and a topic description, decide if the message is related to that topic. "
+        "If yes, generate an appropriate reply using the provided reply context. "
+        "Output ONLY a JSON object: {\"should_reply\": true/false, \"reply\": \"<reply text or empty string>\"}"
+    )
+    user = (
+        f"TOPIC DESCRIPTION:\n{topic_description}\n\n"
+        f"REPLY CONTEXT (what to say if relevant):\n{reply_context}\n\n"
+        f"INCOMING MESSAGE:\n{message_text}"
+    )
+    try:
+        resp = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        result = _json.loads(resp.choices[0].message.content or "{}")
+        should_reply = bool(result.get("should_reply", False))
+        reply_text = result.get("reply", "") if should_reply else ""
+        return should_reply, reply_text
+    except Exception as exc:
+        logger.warning("_triage_whatsapp_message failed: %s", exc)
+        return False, ""
+
+
+async def _fire_whatsapp_smart_reply(automation_id: int, wa_context: dict) -> None:
+    """Triage an incoming message and optionally send a direct reply or fire the supervisor."""
+    async with AsyncSessionLocal() as db:
+        automation = await db.get(Automation, automation_id)
+        if automation is None or not automation.enabled:
+            return
+        config: dict = json.loads(automation.trigger_config_json)
+
+    topic_description = config.get("topic_description", "")
+    reply_context = config.get("reply_context", "")
+    message_text = wa_context.get("message_text", "")
+    chat_id = wa_context.get("chat_id", "")
+
+    should_reply, reply_text = await _triage_whatsapp_message(
+        message_text=message_text,
+        topic_description=topic_description,
+        reply_context=reply_context,
+    )
+
+    if not should_reply:
+        logger.debug("smart_reply automation %d: no match for message=%r", automation_id, message_text[:80])
+        return
+
+    logger.info("smart_reply automation %d: matched, reply=%r", automation_id, reply_text[:80])
+
+    if reply_text:
+        # Fast path: send reply directly without spinning up the full supervisor
+        from app.integrations.green_api import get_green_client
+        client = get_green_client()
+        if client:
+            try:
+                await client.send_message(chat_id, reply_text)
+            except Exception as exc:
+                logger.warning("smart_reply direct send failed: %s", exc)
+    else:
+        # Slow path: fire full supervisor with context if reply_context needs tool use
+        trusted_block = (
+            f"\n\n━━━ TRUSTED TRIGGER CONTEXT ━━━"
+            f"\nchat_id: {chat_id}"
+            f"\nsender_name: {wa_context.get('sender_name', '')}"
+            f"\nmessage_text: {message_text}"
+            f"\n━━━ END TRUSTED CONTEXT ━━━"
+        )
+        await _fire_automation(
+            automation_id,
+            trigger_context={"whatsapp": True, "trusted_block": trusted_block, **wa_context},
+        )
+
+
 async def on_whatsapp_message(
     chat_id: str,
     sender_id: str,
@@ -765,7 +855,7 @@ async def on_whatsapp_message(
         result = await db.execute(
             select(Automation).where(
                 Automation.enabled == True,  # noqa: E712
-                Automation.trigger_type.in_(["whatsapp_group_new", "whatsapp_keyword_match"]),
+                Automation.trigger_type.in_(["whatsapp_group_new", "whatsapp_keyword_match", "whatsapp_smart_reply"]),
             )
         )
         automations = result.scalars().all()
@@ -801,6 +891,15 @@ async def on_whatsapp_message(
                     "whatsapp_keyword_match automation %d matched text=%r", automation.id, message_text[:80]
                 )
                 asyncio.create_task(_fire_whatsapp_automation(automation.id, wa_context))
+
+        elif automation.trigger_type == "whatsapp_smart_reply":
+            target_chat = config.get("chat_id", "")
+            if not target_chat or target_chat == chat_id:
+                logger.info(
+                    "whatsapp_smart_reply automation %d: triaging message from chat_id=%s",
+                    automation.id, chat_id,
+                )
+                asyncio.create_task(_fire_whatsapp_smart_reply(automation.id, wa_context))
 
 
 async def on_whatsapp_outgoing(

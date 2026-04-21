@@ -99,6 +99,17 @@ whatsapp_outgoing_new:
   - chat_id="" means fire on any outgoing message to any group
   - Specific chat_id restricts to that group only
 
+whatsapp_smart_reply:
+  {{"chat_id": "<group chat_id or empty for any>", "topic_description": "<detailed description of what messages to match>", "reply_context": "<what to reply or context for the reply>"}}
+  Use when: "auto-reply", "if someone asks about X reply with Y", "if message is about <topic> respond with <answer>"
+  Rules:
+  - topic_description must be detailed — it's passed to an LLM for semantic matching
+  - reply_context is the answer/context to use in the reply — can be a full paragraph
+  - Example: user says "if someone asks about hackathon registration in Campaign Group, reply with: Registration closes April 30. Form: https://forms.gle/xyz"
+    → {{"chat_id": "120363406807283271@g.us", "topic_description": "questions about hackathon registration, deadline, how to register, registration form", "reply_context": "Registration closes April 30. Form: https://forms.gle/xyz"}}
+  - If user doesn't specify a group, set chat_id to ""
+  - For the action_prompt: "A WhatsApp message matched your smart reply rule. The reply has already been sent directly."
+
 ━━━ ACTION PROMPT RULES ━━━
 Write action_prompt as a clear, direct instruction to an AI assistant.
 It must be specific enough that the assistant can act without asking questions.

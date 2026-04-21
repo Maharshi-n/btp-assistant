@@ -38,6 +38,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, TypedDict
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ from app.tools.google_tools import GOOGLE_TOOLS
 from app.tools.shell import run_shell_command
 from app.tools.web import web_fetch, web_search
 from app.tools.telegram_tools import save_draft, schedule_message, telegram_ask, telegram_send, telegram_send_file
+from app.tools.whatsapp_tools import whatsapp_send
 from app.tools.image import generate_image
 from app.tools.skills import read_skill
 from app.tools.rag import rag_ingest, rag_search
@@ -146,6 +148,7 @@ WORKER_TOOLS = [
     save_draft,
     schedule_message,
     telegram_send_file,
+    whatsapp_send,
     read_skill,
     rag_ingest,
     rag_search,
@@ -376,15 +379,32 @@ Spawn workers ONLY for these exact patterns — no others:
     Action: spawn one worker per file or batch of 3 files.
     NOTE: for RAG (rag_ingest + rag_search), do NOT spawn workers — call RAG tools directly.
 
+  PATTERN 4 — Multiple independent browser/Playwright tasks
+    Condition: user asks for N≥2 independent browser tasks in parallel.
+    Action: spawn one worker per task immediately. Each worker gets its own self-contained task_description.
+    tools_allowed: ["mcp__playwright__browser_navigate", "mcp__playwright__browser_take_screenshot",
+    "mcp__playwright__browser_click", "mcp__playwright__browser_type", "mcp__playwright__browser_snapshot",
+    "mcp__playwright__browser_wait_for", "write_file", "telegram_send", "telegram_send_file", "gmail_send"]
+    Do NOT ask for clarification. Just spawn.
+
 In ALL other cases, do the work yourself sequentially. Do not invent parallelism.
 
 Worker rules:
   - YOU handle all thinking, summarizing, and personalizing BEFORE spawning.
-  - Workers only do pure execution (send, save, fetch, read). No reasoning needed from them.
+  - Workers only do pure execution (send, save, fetch, read, browse). No reasoning needed from them.
   - Give each worker a self-contained task_description with the exact content — no ambiguity.
   - Always list the exact tools_allowed each worker needs (e.g. ["gmail_send"]).
   - Call spawn_workers ONCE with ALL workers in a single call.
-  - Workers cannot spawn sub-workers."""
+  - Workers cannot spawn sub-workers.
+  - NEVER ask the user for the task format or JSON structure. You already know it: each task is
+    {{"task_description": "...", "tools_allowed": ["tool1", "tool2"]}}. Just call spawn_workers_tool.
+
+After workers finish:
+  - Workers return a one-line summary each. READ those summaries.
+  - YOU write the final reply to the user — clean, concise, no worker internal logs.
+  - Format: brief intro line, then one bullet per worker: what it did + outcome.
+  - NEVER paste raw worker output. NEVER repeat worker internal monologue.
+  - If a worker failed, say so clearly in one line."""
 
 
 def _worker_system_prompt(task_description: str, tools_allowed: list[str]) -> str:
@@ -403,7 +423,9 @@ Rules:
 - Use absolute paths inside the workspace for all file operations.
 - Be decisive — infer intent and act. Do not ask clarifying questions.
 - If a tool call fails, try once to fix it, then report the failure clearly.
-- When done, give a one-paragraph summary: what you did, what the result was."""
+- When done, respond with EXACTLY one line in this format (nothing else):
+  DONE: <what you did> | <file path or "sent via telegram/email">
+- No explanations, no multi-paragraph summaries. One line only."""
 
 
 # ---------------------------------------------------------------------------
@@ -599,6 +621,79 @@ def _relocate_playwright_screenshot(result_str: str) -> str:
 
 
 _ERROR_MARKERS = ("MCP tool error", "Tool error:", "Tool timed out", "Error:")
+
+
+# ---- Fix 1+2+3 helpers: multi-task detection + narration stripping ---------
+
+_NARRATION_PATTERNS = _re.compile(
+    r"\b(i'?ll (?:report|get back|update|send|share|let you know|do that|start|spawn|run|begin)"
+    r"|i'?ve (?:started|spawned|kicked off|begun|launched|dispatched|sent|initiated)"
+    r"|spawn(?:ed|ing) (?:the |\d+ )?(?:worker|task|job|agent|browser)"
+    r"|working on (?:it|that|these|this)(?: now| in parallel)?"
+    r"|(?:starting|running|executing|dispatching|kicking off) (?:the |\d+ |these |now)"
+    r"|on it(?:!|,| now)"
+    r"|once (?:they|the workers|the tasks) (?:finish|complete|are done))",
+    _re.IGNORECASE,
+)
+
+# A user turn is "multi-task browser-ish" when it has ≥2 bullets/lines that
+# describe independent browser-like actions (open/search/screenshot/send/save).
+_MULTITASK_BULLET_RE = _re.compile(
+    r"(?mi)^\s*(?:[-*•]|\d+[.)])\s*(?=.{0,200}?\b("
+    r"open|navigate|search|screenshot|take\s+a\s+screenshot|send\s+(?:it|to)|save|"
+    r"email|mail|telegram|download|scrape|visit|go\s+to)\b)",
+)
+
+# Action verbs that mark an independent task line even without a bullet.
+_MULTITASK_VERB_RE = _re.compile(
+    r"(?mi)^\s*(open|navigate|search|take\s+a\s+screenshot|visit|go\s+to)\b",
+)
+
+
+def _is_multitask_request(text: str) -> bool:
+    """Heuristic: does this user message describe ≥2 independent browser/tool tasks?"""
+    if not text or len(text) < 40:
+        return False
+    bullets = len(_MULTITASK_BULLET_RE.findall(text))
+    if bullets >= 2:
+        return True
+    verbs = len(_MULTITASK_VERB_RE.findall(text))
+    return verbs >= 2
+
+
+def _strip_premature_narration(msg: AIMessage) -> AIMessage:
+    """Fix 1: if an AIMessage has tool_calls AND chit-chat content, blank the content.
+
+    The chit-chat streams to the UI before workers finish, confusing the user.
+    We keep the tool call intact so the graph still routes to workers/tools.
+    """
+    if not isinstance(msg, AIMessage):
+        return msg
+    if not getattr(msg, "tool_calls", None):
+        return msg
+    content = msg.content
+    if not content:
+        return msg
+    text = content if isinstance(content, str) else str(content)
+    if not text.strip():
+        return msg
+    if _NARRATION_PATTERNS.search(text) or len(text) < 400:
+        # Short explanatory chatter that precedes a tool call → strip.
+        # (We keep content only if it's a long, substantive answer that
+        # happens to include a tool call — rare but possible.)
+        try:
+            msg.content = ""
+        except Exception:
+            pass
+    return msg
+
+
+def _last_human_text(messages: list[BaseMessage]) -> str:
+    for m in reversed(messages):
+        if isinstance(m, HumanMessage):
+            c = m.content
+            return c if isinstance(c, str) else str(c)
+    return ""
 
 
 async def _ainvoke_with_retry(runnable, payload, *, attempts: int = 3):
@@ -853,6 +948,9 @@ async def _worker_tools_node(state: AgentState, config: RunnableConfig) -> dict:
     worker_id: str = cfg.get("worker_id", "worker")
     thread_id = _ws_thread_id(cfg)
     is_automation = bool(cfg.get("automation_run", False))
+    # Tools explicitly listed in tools_allowed are pre-approved by the supervisor —
+    # skip the interrupt/ask flow for them so workers don't deadlock inside gather().
+    worker_tools_allowed: list[str] = cfg.get("worker_tools_allowed", [])
 
     ctx: RunContext = state.get("run_context") or RunContext(
         recursion_depth=0, agent_count=1, tool_call_count=0, start_time=time.monotonic()
@@ -886,6 +984,11 @@ async def _worker_tools_node(state: AgentState, config: RunnableConfig) -> dict:
 
         # Policy check (same as supervisor's tools)
         decision = get_decision(tool_name, tool_args)
+
+        # Tools explicitly listed in tools_allowed are pre-approved by the supervisor.
+        # Workers run inside asyncio.gather and cannot be individually interrupted.
+        if tool_name in worker_tools_allowed:
+            decision = "auto"
 
         if decision == "ask" and not is_automation:
             request_id = str(uuid.uuid4())
@@ -973,7 +1076,7 @@ async def _worker_tools_node(state: AgentState, config: RunnableConfig) -> dict:
 
         except asyncio.TimeoutError:
             tool_messages.append(
-                ToolMessage(tool_call_id=tool_call_id, content=f"Tool timed out after 60s: {tool_name}")
+                ToolMessage(tool_call_id=tool_call_id, content=f"Tool timed out after 120s: {tool_name}")
             )
         except Exception as exc:
             tool_messages.append(
@@ -1009,17 +1112,32 @@ def _get_worker_graph() -> Any:
 # spawn_workers — the tool the supervisor calls
 # ---------------------------------------------------------------------------
 
+class WorkerTask(BaseModel):
+    task_description: str = Field(description="Full self-contained instructions for the worker — what to do, what URLs to open, what files to save, what tools to call.")
+    tools_allowed: list[str] = Field(description="Exact tool names the worker may use, e.g. ['mcp__playwright__navigate', 'mcp__playwright__screenshot', 'write_file', 'telegram_send']")
+
+
 @tool
-def spawn_workers_tool(tasks: list[dict]) -> str:
+def spawn_workers_tool(tasks: list[WorkerTask]) -> str:
     """Spawn multiple worker agents in parallel to execute independent tasks.
 
-    Each task dict must have:
-    - task_description (str): what the worker should do
-    - tools_allowed (list[str]): tool names the worker may use
+    Call this ONCE with ALL workers together. Each WorkerTask has:
+    - task_description: full self-contained instructions (URL, actions, output location)
+    - tools_allowed: exact list of tool names the worker needs
 
-    This is a placeholder — the actual invocation is handled by
-    run_workers_node which intercepts calls to this tool.
-    Returns a JSON string of results.
+    Example:
+      tasks=[
+        WorkerTask(
+          task_description="Open https://youtube.com, search 'MrBeast', take screenshot, save to workspace/screenshots/mrbeast.png",
+          tools_allowed=["mcp__playwright__browser_navigate","mcp__playwright__browser_take_screenshot","mcp__playwright__browser_type","mcp__playwright__browser_click","write_file"]
+        ),
+        WorkerTask(
+          task_description="Open https://platform.openai.com/docs/models, take screenshot, save to workspace/screenshots/openai.png",
+          tools_allowed=["mcp__playwright__browser_navigate","mcp__playwright__browser_take_screenshot","write_file"]
+        ),
+      ]
+
+    This is intercepted by run_workers_node — the body never executes.
     """
     # This body is never actually executed — run_workers_node intercepts it.
     return json.dumps({"error": "spawn_workers_tool invoked directly — should be intercepted"})
@@ -1099,6 +1217,27 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
         tool_call_count=0,
         start_time=time.monotonic(),
     )
+
+    # Per-turn reset: bounds are a budget for the CURRENT user turn, not a
+    # lifetime counter for the thread. If the latest message is a HumanMessage
+    # with no AIMessage after it yet, we're at the start of a new turn —
+    # reset the counters so prior turns' usage doesn't block this one.
+    msgs = state.get("messages") or []
+    last_human_idx = next(
+        (i for i in range(len(msgs) - 1, -1, -1) if isinstance(msgs[i], HumanMessage)),
+        None,
+    )
+    if last_human_idx is not None:
+        has_ai_after = any(
+            isinstance(m, AIMessage) for m in msgs[last_human_idx + 1:]
+        )
+        if not has_ai_after:
+            ctx = RunContext(
+                recursion_depth=0,
+                agent_count=1,
+                tool_call_count=0,
+                start_time=time.monotonic(),
+            )
 
     # Bounds check before calling LLM
     err = _check_bounds(ctx)
@@ -1206,7 +1345,48 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
     # Heal any remaining dangling tool calls deeper in the history.
     _heal_dangling_tool_calls(messages)
 
-    response: BaseMessage = await _ainvoke_with_retry(llm_with_tools, messages)
+    # Fix 2: per-turn nudge when the user message looks like ≥2 parallel tasks,
+    # BUT only if workers haven't already run this turn.
+    user_text = _last_human_text(messages)
+    is_multitask = _is_multitask_request(user_text)
+    workers_already_ran = any(
+        isinstance(m, ToolMessage) and "workers finished" in (getattr(m, "content", "") or "").lower()
+        for m in messages
+    )
+    if is_multitask and not workers_already_ran:
+        messages.append(SystemMessage(content=(
+            "REMINDER: The user asked for multiple independent tasks in one turn. "
+            "You MUST call spawn_workers_tool on this turn with one WorkerTask per item. "
+            "Do NOT reply in plain text. Do NOT say 'I'll report back' or 'on it'. "
+            "Emit the tool call now."
+        )))
+
+    # If workers just finished, bind LLM without tools so it can't spawn again
+    if workers_already_ran:
+        response = await _ainvoke_with_retry(llm.bind_tools([]), messages)
+    else:
+        response = await _ainvoke_with_retry(llm_with_tools, messages)
+
+    # Fix 3: if this was a multitask turn but the model replied with text and no
+    # tool calls, reject and retry once with a sharper nudge.
+    # Only applies if workers haven't already run.
+    if (
+        is_multitask
+        and not workers_already_ran
+        and isinstance(response, AIMessage)
+        and not getattr(response, "tool_calls", None)
+    ):
+        logger.warning("supervisor_node: multitask turn returned no tool_calls — retrying once")
+        messages.append(SystemMessage(content=(
+            "You just replied in plain text. That is wrong. "
+            "The user asked for multiple parallel tasks. "
+            "Call spawn_workers_tool NOW with one WorkerTask per task. No prose."
+        )))
+        response = await _ainvoke_with_retry(llm_with_tools, messages)
+
+    # Fix 1: strip premature "I'll report back" chatter from tool-calling messages.
+    response = _strip_premature_narration(response) if isinstance(response, AIMessage) else response
+
     return {"messages": [response], "run_context": ctx}
 
 
@@ -1314,7 +1494,7 @@ async def policy_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             tool_messages.append(ToolMessage(tool_call_id=tool_call_id, content=result_str))
         except asyncio.TimeoutError:
             tool_messages.append(
-                ToolMessage(tool_call_id=tool_call_id, content=f"Tool timed out after 60s: {tool_name}")
+                ToolMessage(tool_call_id=tool_call_id, content=f"Tool timed out after 120s: {tool_name}")
             )
         except Exception as exc:
             tool_messages.append(
@@ -1346,7 +1526,12 @@ async def run_workers_node(state: AgentState, config: RunnableConfig) -> dict:
 
         tool_call_id: str = tc["id"]
         raw_args = tc["args"] if isinstance(tc["args"], dict) else {}
-        tasks: list[dict] = raw_args.get("tasks", [])
+        raw_tasks = raw_args.get("tasks", [])
+        # Normalise: Pydantic objects → dicts
+        tasks: list[dict] = [
+            t.model_dump() if hasattr(t, "model_dump") else t
+            for t in raw_tasks
+        ]
 
         if not tasks:
             tool_messages.append(
@@ -1381,9 +1566,17 @@ async def run_workers_node(state: AgentState, config: RunnableConfig) -> dict:
         ctx["agent_count"] += len(tasks)
 
         # Notify UI about new workers
+        worker_ids = [str(uuid.uuid4())[:8] for _ in tasks]
         try:
             from app.web.routes.ws import manager as ws_manager
-            worker_ids = [str(uuid.uuid4())[:8] for _ in tasks]
+            # Fix 4: sticky banner so users know work is in flight even if
+            # individual worker events are missed (reconnects etc).
+            await ws_manager.send(thread_id, {
+                "type": "workers_banner",
+                "status": "running",
+                "count": len(tasks),
+                "text": f"Running {len(tasks)} worker{'s' if len(tasks) != 1 else ''} in parallel…",
+            })
             for wid, task in zip(worker_ids, tasks):
                 await ws_manager.send(thread_id, {
                     "type": "worker_start",
@@ -1391,7 +1584,18 @@ async def run_workers_node(state: AgentState, config: RunnableConfig) -> dict:
                     "description": task.get("task_description", "")[:120],
                 })
         except Exception:
-            worker_ids = [str(uuid.uuid4())[:8] for _ in tasks]
+            pass
+
+        # Send a status notification (NOT a token — tokens get saved to DB and
+        # confuse the supervisor into thinking it needs to act again)
+        try:
+            from app.web.routes.ws import manager as ws_manager
+            await ws_manager.send(thread_id, {
+                "type": "worker_status",
+                "content": f"Running {len(tasks)} workers in parallel...",
+            })
+        except Exception:
+            pass
 
         # Run workers in parallel
         worker_graph = _get_worker_graph()
@@ -1442,7 +1646,11 @@ async def run_workers_node(state: AgentState, config: RunnableConfig) -> dict:
                     if isinstance(m, AIMessage):
                         last_ai = m
                         break
-                result_text = last_ai.content if last_ai else "Worker completed with no output."
+                raw = last_ai.content if last_ai else "Worker completed with no output."
+                # Keep only the DONE: line — strip verbose internal monologue
+                lines = [l.strip() for l in raw.strip().splitlines() if l.strip()]
+                done_lines = [l for l in lines if l.upper().startswith("DONE:")]
+                result_text = done_lines[-1] if done_lines else lines[-1] if lines else "No output."
 
             except Exception as exc:
                 result_text = f"Worker error: {exc}"
@@ -1465,15 +1673,42 @@ async def run_workers_node(state: AgentState, config: RunnableConfig) -> dict:
             return_exceptions=False,
         )
 
-        # Aggregate results into the tool message
-        parts = []
-        for wid, result_text in results:
-            task_for_wid = tasks[worker_ids.index(wid)]
-            desc = task_for_wid.get("task_description", "")[:80]
-            parts.append(f"[Worker {wid}] Task: {desc}\nResult: {result_text}")
+        # Fix 4: replace the "running" banner with a "done" marker.
+        try:
+            from app.web.routes.ws import manager as ws_manager
+            await ws_manager.send(thread_id, {
+                "type": "workers_banner",
+                "status": "done",
+                "count": len(results),
+                "text": f"{len(results)} worker{'s' if len(results) != 1 else ''} finished.",
+            })
+        except Exception:
+            pass
 
-        combined = "\n\n---\n\n".join(parts)
-        tool_messages.append(ToolMessage(tool_call_id=tool_call_id, content=combined))
+        # Build worker containers — each has a summary (one line) and detail (full).
+        # Supervisor receives ONLY summaries. Details are stored for reference but
+        # never sent to the LLM — they are the "container contents" the worker filled.
+        containers: list[dict] = []
+        for i, (wid, result_text) in enumerate(results, 1):
+            lines = [l.strip() for l in result_text.strip().splitlines() if l.strip()]
+            done_lines = [l for l in lines if l.upper().startswith("DONE:")]
+            summary = done_lines[-1] if done_lines else (lines[-1] if lines else "No output.")
+            containers.append({
+                "worker": i,
+                "summary": summary,
+                "detail": result_text,  # stored but NOT sent to supervisor LLM
+            })
+
+        # What the supervisor LLM sees: numbered summaries only + hard instruction
+        summary_lines = "\n".join(f"[Worker {c['worker']}] {c['summary']}" for c in containers)
+        tool_msg_content = (
+            f"All {len(containers)} workers finished. Summaries:\n\n"
+            f"{summary_lines}\n\n"
+            "INSTRUCTION: Write your final reply to the user now. "
+            "One clean paragraph. Cover what each worker did and the result. "
+            "Do NOT call any more tools. Do NOT spawn more workers."
+        )
+        tool_messages.append(ToolMessage(tool_call_id=tool_call_id, content=tool_msg_content))
 
     return {"messages": tool_messages, "run_context": ctx}
 

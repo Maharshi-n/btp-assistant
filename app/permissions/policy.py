@@ -57,8 +57,36 @@ def policy_delete_file(args: dict) -> Decision:
     return "ask"
 
 
+_SHELL_ASK_PATTERNS = (
+    # Destructive / system-modifying — always ask
+    r"\brm\b", r"\brmdir\b", r"\bdel\b", r"\berase\b",
+    r"Remove-Item", r"\bmv\b\s.*\s/", r"\bmove\b",
+    r"\buninstall\b", r"winget\s+uninstall",
+    r"pip\s+uninstall", r"npm\s+uninstall", r"yarn\s+remove",
+    r"git\s+push\s+.*--force", r"git\s+push\s+.*-f\b",
+    r"git\s+reset\s+--hard", r"git\s+clean\s+-[a-z]*f",
+    r"git\s+branch\s+-D\b",
+    r"\bkill\b", r"Stop-Process", r"taskkill",
+    r"\bchmod\b", r"\bchown\b", r"icacls", r"takeown",
+    r"DROP\s+TABLE", r"DROP\s+DATABASE", r"TRUNCATE\s+TABLE",
+    r"\bsudo\b", r"runas\s+/",
+    r"reg\s+(delete|add)\b", r"regedit",
+    r"\bcurl\b.*\|\s*(sh|bash|powershell|pwsh|cmd)",
+    r"Invoke-Expression", r"\biex\b", r"\bsc\s+(delete|stop|create)\b",
+    r">\s*[A-Za-z]:[\\/]",  # redirect to absolute path (overwrite)
+    r"echo\s+.*>\s*[A-Za-z]:[\\/]",
+)
+import re as _sh_re
+_SHELL_ASK_RE = _sh_re.compile("|".join(_SHELL_ASK_PATTERNS), _sh_re.IGNORECASE)
+
+
 def policy_run_shell_command(args: dict) -> Decision:
-    """Allowlisted shell commands are auto.  The allowlist itself blocks anything else."""
+    """Auto for read-only / constructive commands; ask for anything destructive
+    (delete, uninstall, force-push, kill, chmod, registry edits, sudo, pipe-to-shell, etc.).
+    """
+    command = args.get("command", "") or ""
+    if _SHELL_ASK_RE.search(command):
+        return "ask"
     return "auto"
 
 
@@ -146,6 +174,15 @@ def policy_telegram_ask(args: dict) -> Decision:
 
 
 # ---------------------------------------------------------------------------
+# WhatsApp
+# ---------------------------------------------------------------------------
+
+def policy_whatsapp_send(args: dict) -> Decision:
+    """Sending a WhatsApp message requires owner approval by default."""
+    return "ask"
+
+
+# ---------------------------------------------------------------------------
 # RAG tools
 # ---------------------------------------------------------------------------
 
@@ -185,6 +222,7 @@ _POLICY_TABLE: dict[str, object] = {
     "calendar_create_event": policy_calendar_create_event,
     "telegram_send": policy_telegram_send,
     "telegram_ask": policy_telegram_ask,
+    "whatsapp_send": policy_whatsapp_send,
     # Skills — read-only, always auto
     "read_skill": lambda args: "auto",
     "save_draft": lambda args: "auto",
@@ -247,6 +285,11 @@ def _mcp_tool_decision(tool_name: str) -> Decision:
 
 def human_readable_prompt(tool_name: str, args: dict) -> str:
     """Return a short human-readable approval prompt for the UI card."""
+    if tool_name == "run_shell_command":
+        cmd = args.get("command", "?")
+        if len(cmd) > 200:
+            cmd = cmd[:200] + "…"
+        return f"Run shell command: {cmd}"
     if tool_name == "delete_file":
         path = args.get("path", "?")
         return f"Delete file: {path}"

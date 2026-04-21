@@ -227,6 +227,19 @@ async def _store_message(body: dict, direction: str) -> None:
             )
             db.add(msg)
             await db.commit()
+
+        if direction == "outgoing":
+            try:
+                from app.automations.runtime import on_whatsapp_outgoing
+                asyncio.get_running_loop().create_task(
+                    on_whatsapp_outgoing(
+                        chat_id=chat_id,
+                        message_text=body.get("messageData", {}).get("textMessageData", {}).get("textMessage") or "",
+                        group_name="",
+                    )
+                )
+            except Exception as _exc:
+                logger.warning("whatsapp outgoing automation dispatch failed: %s", _exc)
     except Exception as exc:
         logger.warning("_store_message: failed: %s", exc)
 

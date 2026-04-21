@@ -648,8 +648,8 @@ def _register_automation(automation: Automation, loop: asyncio.AbstractEventLoop
             watch = _observer.schedule(handler, watch_path, recursive=False)
             _fs_handlers[aid] = (watch, watch_path)
             logger.info("Registered fs_new_in_folder automation %d: %s", aid, watch_path)
-    elif trigger_type in ("whatsapp_group_new", "whatsapp_keyword_match"):
-        # Webhook-driven — no scheduler job needed; on_whatsapp_message() handles dispatch
+    elif trigger_type in ("whatsapp_group_new", "whatsapp_keyword_match", "whatsapp_outgoing_new", "whatsapp_smart_reply"):
+        # Webhook-driven — no scheduler job needed; on_whatsapp_message() / on_whatsapp_outgoing() handles dispatch
         logger.info(
             "Registered whatsapp automation %d (%s) — webhook-driven", aid, trigger_type
         )
@@ -801,6 +801,44 @@ async def on_whatsapp_message(
                     "whatsapp_keyword_match automation %d matched text=%r", automation.id, message_text[:80]
                 )
                 asyncio.create_task(_fire_whatsapp_automation(automation.id, wa_context))
+
+
+async def on_whatsapp_outgoing(
+    chat_id: str,
+    message_text: str,
+    group_name: str = "",
+) -> None:
+    """Called when an outgoing WhatsApp message is stored (sent by agent or manual UI send).
+
+    Fires all enabled whatsapp_outgoing_new automations that match the chat_id.
+    """
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Automation).where(
+                Automation.enabled == True,  # noqa: E712
+                Automation.trigger_type == "whatsapp_outgoing_new",
+            )
+        )
+        automations = result.scalars().all()
+
+    wa_context = {
+        "chat_id": chat_id,
+        "sender_id": "agent",
+        "sender_name": "RAION",
+        "message_text": message_text,
+        "group_name": group_name,
+    }
+
+    for automation in automations:
+        config: dict = json.loads(automation.trigger_config_json)
+        target_chat = config.get("chat_id", "")
+        if not target_chat or target_chat == chat_id:
+            logger.info(
+                "whatsapp_outgoing_new automation %d matched chat_id=%s", automation.id, chat_id
+            )
+            asyncio.create_task(_fire_whatsapp_automation(automation.id, wa_context))
 
 
 # ---------------------------------------------------------------------------

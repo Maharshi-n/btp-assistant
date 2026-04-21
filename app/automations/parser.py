@@ -36,7 +36,7 @@ Output ONLY the JSON — no explanation, no markdown fences.
 ━━━ JSON SCHEMA ━━━
 {{
   "name":           "<short human-readable name, 3-6 words>",
-  "trigger_type":   "cron" | "gmail_any_new" | "gmail_new_from_sender" | "gmail_keyword_match" | "fs_new_in_folder",
+  "trigger_type":   "cron" | "gmail_any_new" | "gmail_new_from_sender" | "gmail_keyword_match" | "fs_new_in_folder" | "whatsapp_group_new" | "whatsapp_keyword_match" | "whatsapp_outgoing_new" | "whatsapp_smart_reply",
   "trigger_config": {{ ... }},
   "action_prompt":  "<instruction for the AI assistant>"
 }}
@@ -92,6 +92,12 @@ whatsapp_keyword_match:
   - Keywords are matched case-insensitively against incoming message text
   - "urgent or emergency" → {{"keywords": "urgent emergency"}}
   - "meeting or standup" → {{"keywords": "meeting standup"}}
+
+whatsapp_outgoing_new:
+  {{"chat_id": "<group chat_id ending in @g.us, or empty string for any group>"}}
+  Use when: "when I send a WhatsApp message", "when RAION sends to WhatsApp", "log my outgoing WhatsApp messages"
+  - chat_id="" means fire on any outgoing message to any group
+  - Specific chat_id restricts to that group only
 
 ━━━ ACTION PROMPT RULES ━━━
 Write action_prompt as a clear, direct instruction to an AI assistant.
@@ -310,7 +316,7 @@ async def parse_automation(nl_description: str, db: Optional[AsyncSession] = Non
     if missing:
         raise ValueError(f"Parsed automation missing keys: {missing}. Got: {parsed}")
 
-    valid_types = {"cron", "gmail_any_new", "gmail_new_from_sender", "gmail_keyword_match", "fs_new_in_folder", "whatsapp_group_new", "whatsapp_keyword_match"}
+    valid_types = {"cron", "gmail_any_new", "gmail_new_from_sender", "gmail_keyword_match", "fs_new_in_folder", "whatsapp_group_new", "whatsapp_keyword_match", "whatsapp_outgoing_new", "whatsapp_smart_reply"}
     if parsed["trigger_type"] not in valid_types:
         raise ValueError(
             f"Invalid trigger_type {parsed['trigger_type']!r}. Must be one of {valid_types}"

@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -300,3 +303,36 @@ class WorkspaceLocation(Base):
     created_at: Mapped[datetime] = mapped_column(
         _DT, server_default=func.now(), nullable=False
     )
+
+
+class WhatsAppGroup(Base):
+    __tablename__ = "whatsapp_groups"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    chat_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+    keyword_filter: Mapped[str | None] = mapped_column(Text, nullable=True)
+    auto_send_allowed: Mapped[bool] = mapped_column(default=False, nullable=False)
+    last_message_at: Mapped[datetime | None] = mapped_column(_DT, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(_DT, server_default=func.now(), nullable=False)
+
+
+class WhatsAppMessage(Base):
+    __tablename__ = "whatsapp_messages"
+    __table_args__ = (
+        Index("ix_wa_msg_chat_created", "chat_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    message_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    chat_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    sender_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    sender_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    message_type: Mapped[str] = mapped_column(String(32), nullable=False, default="text")
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(_DT, server_default=func.now(), nullable=False)

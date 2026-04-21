@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app.db.engine import AsyncSessionLocal
 from app.db.models import WhatsAppGroup, WhatsAppMessage
 from app.integrations.green_api import GreenAPIError, get_green_client
+from app.tools.filesystem import _safe_resolve, OutsideWorkspaceError
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ async def whatsapp_send(chat_id: str, text: str) -> str:
 
 class WhatsAppSendFileInput(BaseModel):
     chat_id: str = Field(
-        description="Green API chat ID, e.g. '120363012345@g.us' for groups."
+        description="Green API chat ID, e.g. '120363012345@g.us' for groups or '919876543210@c.us' for contacts."
     )
     file_path: str = Field(
         description="Absolute path to the local file to send (image, PDF, video, etc.)."
@@ -90,14 +91,16 @@ async def whatsapp_send_file(chat_id: str, file_path: str, caption: str = "") ->
     Uploads the file directly from the local filesystem via Green API.
     Only registered groups are allowed for group chat_ids.
     """
-    from pathlib import Path as _Path
     client = get_green_client()
     if client is None:
         return "WhatsApp not configured."
 
-    p = _Path(file_path)
-    if not p.exists():
-        return f"File not found: {file_path}"
+    # Resolve file path and verify it's inside the workspace
+    try:
+        p = _safe_resolve(file_path)
+    except OutsideWorkspaceError as e:
+        return str(e)
+
     if not p.is_file():
         return f"Path is not a file: {file_path}"
 

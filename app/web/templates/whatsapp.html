@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+{% block title %}WhatsApp — RAION{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto px-4 py-6 space-y-6">
+
+  <!-- Header + status -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+    <div class="flex items-center justify-between">
+      <div>
+        <h1 class="text-xl font-semibold text-gray-900">WhatsApp</h1>
+        <p class="text-sm text-gray-500 mt-0.5">Green API integration</p>
+      </div>
+      <span id="status-badge"
+            class="px-3 py-1 rounded-full text-sm font-medium
+                   {% if instance_status == 'authorized' %}bg-green-50 text-green-700 border border-green-200
+                   {% elif instance_status == 'not_configured' %}bg-gray-100 text-gray-500
+                   {% else %}bg-red-50 text-red-600 border border-red-200{% endif %}">
+        {{ instance_status }}
+      </span>
+    </div>
+    {% if not whatsapp_enabled %}
+    <p class="mt-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+      Set GREEN_API_INSTANCE_ID and GREEN_API_TOKEN in your .env to enable WhatsApp.
+    </p>
+    {% endif %}
+  </div>
+
+  <!-- Add group -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+    <h2 class="text-base font-semibold text-gray-800 mb-3">Add group</h2>
+    <p class="text-xs text-gray-500 mb-3">
+      Paste the group's Green API chat_id (e.g. <code class="font-mono bg-gray-100 px-1 rounded">120363012345@g.us</code>).
+      Get it from the Green API webhook logs after someone sends a message in the group.
+    </p>
+    <form id="add-group-form" class="flex gap-2" onsubmit="addGroup(event)">
+      <input id="new-chat-id" type="text" placeholder="120363012345678901@g.us"
+             class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+      <input id="new-name" type="text" placeholder="Group name"
+             class="w-40 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+      <button type="submit"
+              class="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors">
+        Add
+      </button>
+    </form>
+    <p id="add-error" class="text-xs text-red-600 mt-1 hidden"></p>
+  </div>
+
+  <!-- Groups table -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+    <div class="px-5 py-3 border-b border-gray-100 bg-gray-50">
+      <h2 class="text-base font-semibold text-gray-800">Registered groups</h2>
+    </div>
+    {% if groups %}
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+          <th class="px-4 py-2 font-medium">Name</th>
+          <th class="px-4 py-2 font-medium">Chat ID</th>
+          <th class="px-4 py-2 font-medium">Last message</th>
+          <th class="px-4 py-2 font-medium">Keyword filter</th>
+          <th class="px-4 py-2 font-medium">Enabled</th>
+          <th class="px-4 py-2 font-medium"></th>
+        </tr>
+      </thead>
+      <tbody id="groups-tbody">
+        {% for g in groups %}
+        <tr class="border-b border-gray-50 hover:bg-gray-50 transition-colors" id="group-row-{{ g.id }}">
+          <td class="px-4 py-2 font-medium text-gray-900">{{ g.name }}</td>
+          <td class="px-4 py-2 text-gray-500 font-mono text-xs">{{ g.chat_id }}</td>
+          <td class="px-4 py-2 text-gray-500">
+            {% if g.last_message_at %}{{ g.last_message_at.strftime('%b %d %H:%M') }}{% else %}—{% endif %}
+          </td>
+          <td class="px-4 py-2 text-gray-500">{{ g.keyword_filter or '—' }}</td>
+          <td class="px-4 py-2">
+            <button onclick="toggleGroup({{ g.id }}, this)"
+                    class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors
+                           {% if g.enabled %}bg-blue-600{% else %}bg-gray-300{% endif %}">
+              <span class="inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform
+                           {% if g.enabled %}translate-x-4{% else %}translate-x-0.5{% endif %}"></span>
+            </button>
+          </td>
+          <td class="px-4 py-2 text-right">
+            <button onclick="deleteGroup({{ g.id }})"
+                    class="text-xs text-red-500 hover:text-red-700 transition-colors">Delete</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="px-5 py-6 text-sm text-gray-400 text-center">No groups yet. Add one above.</p>
+    {% endif %}
+  </div>
+
+  <!-- Manual send -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+    <h2 class="text-base font-semibold text-gray-800 mb-3">Send message</h2>
+    <form onsubmit="sendMessage(event)" class="space-y-3">
+      <select id="send-chat-id"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <option value="">Select a group…</option>
+        {% for g in groups %}
+        {% if g.enabled %}
+        <option value="{{ g.chat_id }}">{{ g.name }}</option>
+        {% endif %}
+        {% endfor %}
+      </select>
+      <textarea id="send-text" rows="3" placeholder="Type a message…"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+      <button type="submit"
+              class="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 transition-colors">
+        Send
+      </button>
+      <p id="send-status" class="text-sm hidden"></p>
+    </form>
+  </div>
+
+  <!-- Recent messages -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+    <div class="px-5 py-3 border-b border-gray-100 bg-gray-50">
+      <h2 class="text-base font-semibold text-gray-800">Recent messages</h2>
+    </div>
+    {% if recent_messages %}
+    <ul class="divide-y divide-gray-50">
+      {% for m in recent_messages %}
+      <li class="px-5 py-3 flex items-start gap-3">
+        <span class="text-xs px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5
+                     {% if m.direction == 'incoming' %}bg-blue-50 text-blue-700{% else %}bg-green-50 text-green-700{% endif %}">
+          {{ m.direction[:2].upper() }}
+        </span>
+        <div class="flex-1 min-w-0">
+          <p class="text-xs text-gray-500">
+            {{ m.sender_name or m.sender_id }} &middot;
+            <span class="font-mono">{{ m.chat_id }}</span> &middot;
+            {% if m.created_at %}{{ m.created_at.strftime('%b %d %H:%M') }}{% endif %}
+          </p>
+          <p class="text-sm text-gray-800 mt-0.5 break-words">{{ m.text or '[media]' }}</p>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="px-5 py-6 text-sm text-gray-400 text-center">No messages yet.</p>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+async function addGroup(e) {
+  e.preventDefault();
+  const chatId = document.getElementById('new-chat-id').value.trim();
+  const name = document.getElementById('new-name').value.trim();
+  const err = document.getElementById('add-error');
+  err.classList.add('hidden');
+  if (!chatId || !name) { err.textContent = 'Both chat_id and name are required.'; err.classList.remove('hidden'); return; }
+  const resp = await fetch('/api/whatsapp/groups', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({chat_id: chatId, name}),
+  });
+  if (resp.ok) {
+    window.location.reload();
+  } else {
+    const data = await resp.json().catch(() => ({}));
+    err.textContent = data.detail || 'Failed to add group.';
+    err.classList.remove('hidden');
+  }
+}
+
+async function deleteGroup(id) {
+  if (!confirm('Remove this group?')) return;
+  const resp = await fetch(`/api/whatsapp/groups/${id}`, {method: 'DELETE'});
+  if (resp.ok) document.getElementById(`group-row-${id}`)?.remove();
+}
+
+async function toggleGroup(id, btn) {
+  const resp = await fetch(`/api/whatsapp/groups/${id}/toggle`, {method: 'POST'});
+  if (resp.ok) {
+    const data = await resp.json();
+    const track = btn;
+    const knob = track.querySelector('span');
+    if (data.enabled) {
+      track.classList.replace('bg-gray-300', 'bg-blue-600');
+      knob.classList.replace('translate-x-0.5', 'translate-x-4');
+    } else {
+      track.classList.replace('bg-blue-600', 'bg-gray-300');
+      knob.classList.replace('translate-x-4', 'translate-x-0.5');
+    }
+  }
+}
+
+async function sendMessage(e) {
+  e.preventDefault();
+  const chatId = document.getElementById('send-chat-id').value;
+  const text = document.getElementById('send-text').value.trim();
+  const status = document.getElementById('send-status');
+  status.className = 'text-sm';
+  if (!chatId) { status.textContent = 'Select a group.'; status.classList.add('text-red-600'); status.classList.remove('hidden'); return; }
+  if (!text) { status.textContent = 'Message cannot be empty.'; status.classList.add('text-red-600'); status.classList.remove('hidden'); return; }
+  const resp = await fetch('/api/whatsapp/send', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({chat_id: chatId, text}),
+  });
+  if (resp.ok) {
+    status.textContent = 'Sent.';
+    status.classList.add('text-green-700');
+    status.classList.remove('hidden');
+    document.getElementById('send-text').value = '';
+  } else {
+    const data = await resp.json().catch(() => ({}));
+    status.textContent = data.detail || 'Send failed.';
+    status.classList.add('text-red-600');
+    status.classList.remove('hidden');
+  }
+}
+</script>
+
+<!-- Dark theme overrides for whatsapp.html -->
+<style>
+[data-theme="dark"] #groups-tbody tr:hover { background-color: #1e293b !important; }
+[data-theme="dark"] #groups-tbody td       { color: #e2e8f0 !important; }
+[data-theme="dark"] #status-badge.bg-gray-100 { background-color: #334155 !important; color: #94a3b8 !important; }
+</style>
+{% endblock %}

@@ -70,6 +70,16 @@ async def whatsapp_send(chat_id: str, text: str) -> str:
     except Exception as exc:
         logger.warning("whatsapp_send: failed to persist outgoing message: %s", exc)
 
+    # Fire outgoing automation trigger (fire-and-forget)
+    try:
+        import asyncio as _asyncio
+        from app.automations.runtime import on_whatsapp_outgoing
+        _asyncio.get_running_loop().create_task(
+            on_whatsapp_outgoing(chat_id=chat_id, message_text=text, group_name=group_name or "")
+        )
+    except Exception:
+        pass
+
     label = group_name or chat_id
     return f"Sent to {label}."
 
@@ -136,6 +146,16 @@ async def whatsapp_send_file(chat_id: str, file_path: str, caption: str = "") ->
             await db.commit()
     except Exception as exc:
         logger.warning("whatsapp_send_file: failed to persist: %s", exc)
+
+    # Fire outgoing automation trigger (fire-and-forget)
+    try:
+        import asyncio as _asyncio
+        from app.automations.runtime import on_whatsapp_outgoing
+        _asyncio.get_running_loop().create_task(
+            on_whatsapp_outgoing(chat_id=chat_id, message_text=caption or p.name, group_name=group_name or "")
+        )
+    except Exception:
+        pass
 
     label = group_name or chat_id
     return f"File '{p.name}' sent to {label}."

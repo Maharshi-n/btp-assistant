@@ -139,3 +139,52 @@ async def whatsapp_send_file(chat_id: str, file_path: str, caption: str = "") ->
 
     label = group_name or chat_id
     return f"File '{p.name}' sent to {label}."
+
+
+class WhatsAppReadMessagesInput(BaseModel):
+    chat_id: str = Field(
+        description="Green API chat ID of the group or contact to read messages from."
+    )
+    count: int = Field(
+        default=20,
+        description="Number of recent messages to fetch (max 100).",
+        ge=1,
+        le=100,
+    )
+
+
+@tool(args_schema=WhatsAppReadMessagesInput)
+async def whatsapp_read_messages(chat_id: str, count: int = 20) -> str:
+    """Read recent messages from a WhatsApp group or contact chat.
+
+    Returns the last N messages formatted as a readable transcript.
+    """
+    client = get_green_client()
+    if client is None:
+        return "WhatsApp not configured."
+
+    try:
+        messages = await client.get_chat_history(chat_id, count=count)
+    except GreenAPIError as exc:
+        return f"Failed to fetch messages: {exc}"
+
+    if not messages:
+        return "No messages found."
+
+    lines: list[str] = []
+    for m in messages:
+        sender = m.get("senderName") or m.get("senderId", "unknown")
+        msg_type = m.get("type", "text")
+        timestamp = m.get("timestamp", "")
+        if msg_type == "textMessage":
+            text = m.get("textMessage", "")
+        elif msg_type == "extendedTextMessage":
+            text = m.get("extendedTextMessage", {}).get("text", "")
+        elif msg_type in ("imageMessage", "videoMessage", "documentMessage"):
+            caption = m.get(msg_type, {}).get("caption", "")
+            text = f"[{msg_type.replace('Message','')}] {caption}".strip()
+        else:
+            text = f"[{msg_type}]"
+        lines.append(f"[{timestamp}] {sender}: {text}")
+
+    return "\n".join(lines)

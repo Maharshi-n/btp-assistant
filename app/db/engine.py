@@ -17,7 +17,7 @@ def _sync_url(url: str) -> str:
     )
 
 
-_sync_engine = create_engine(_sync_url(DATABASE_URL), pool_pre_ping=True)
+_sync_engine = create_engine(_sync_url(DATABASE_URL), pool_pre_ping=True, connect_args={"timeout": 30})
 SyncSessionLocal = sessionmaker(_sync_engine, expire_on_commit=False)
 
 # asyncpg on Windows (Python 3.14 + SelectorEventLoop) occasionally logs
@@ -36,7 +36,8 @@ engine = create_async_engine(
     pool_size=5,
     max_overflow=10,
     pool_pre_ping=True,
-    pool_recycle=1800,  
+    pool_recycle=1800,
+    connect_args={"timeout": 30},  # wait up to 30s for lock instead of failing immediately
 )
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 

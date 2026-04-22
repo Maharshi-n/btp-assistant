@@ -166,7 +166,9 @@ async def _fire_automation(automation_id: int, trigger_context: dict | None = No
                 effective_prompt = (
                     "[AUTOMATION RUN — execute immediately, no questions. "
                     "You MUST call tools as instructed. Do NOT just reply with text — "
-                    "if the action says call telegram_send, you MUST call it as a tool.]\n\n"
+                    "if the action says call telegram_send, you MUST call it as a tool. "
+                    "After completing the task, end your reply with: 'File: <exact file path>' "
+                    "so the path is visible in the thread for follow-up actions.]\n\n"
                     + automation.action_prompt
                     + f"\n\nconversation_id: {conversation_id}"
                     + f"\nTriggered by new file: {trigger_context['file_path']}"

@@ -56,6 +56,9 @@ _wa_polling_enabled: bool = True
 # skipped on the first poll after a restart to avoid replaying the backlog
 _server_start_unix: float = 0.0
 
+# Guard to prevent start_automations_runtime from running more than once
+_runtime_started: bool = False
+
 
 def get_wa_polling_enabled() -> bool:
     return _wa_polling_enabled
@@ -918,7 +921,11 @@ async def _wa_poll_loop() -> None:
 
 async def start_automations_runtime() -> None:
     """Called from app startup. Initialises scheduler + observer, loads all enabled automations."""
-    global _scheduler, _observer, _wa_poll_task, _server_start_unix
+    global _scheduler, _observer, _wa_poll_task, _server_start_unix, _runtime_started
+    if _runtime_started:
+        logger.warning("start_automations_runtime called more than once — ignoring duplicate")
+        return
+    _runtime_started = True
     _server_start_unix = datetime.now(timezone.utc).timestamp()
 
     loop = asyncio.get_running_loop()
@@ -955,7 +962,8 @@ async def start_automations_runtime() -> None:
 
 async def stop_automations_runtime() -> None:
     """Called from app shutdown."""
-    global _scheduler, _observer, _wa_poll_task
+    global _scheduler, _observer, _wa_poll_task, _runtime_started
+    _runtime_started = False
 
     if _wa_poll_task and not _wa_poll_task.done():
         _wa_poll_task.cancel()

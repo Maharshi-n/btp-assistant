@@ -67,12 +67,16 @@ async def login_post(
     await db.commit()
 
     response = RedirectResponse(url="/", status_code=302)
+    import os as _os
+    _secure = _os.environ.get("COOKIE_SECURE", "").lower() in ("1", "true", "yes")
     response.set_cookie(
         key="session_token",
         value=signed_token,
         httponly=True,
         max_age=SESSION_TTL_SECONDS,
         samesite="lax",
+        secure=_secure,
+        path="/",
     )
     return response
 

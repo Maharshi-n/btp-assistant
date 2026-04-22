@@ -3,6 +3,8 @@
 
 # Database files
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 
@@ -44,6 +46,15 @@ Thumbs.db
 # Local tooling and planning files (not part of the project source)
 .claude/
 .agents/
+.playwright-mcp/
 docs/
 planchat.txt
+thischat.txt
+WHATSAPP_INTEGRATION_PLAN.md
 skills-lock.json
+models.json
+seed_demo.py
+repair.md
+
+# Runtime workspace directory (user data, not source)
+workspace/

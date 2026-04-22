@@ -31,16 +31,19 @@ async def telegram_send(message: str, config: RunnableConfig = None) -> str:
         logger.warning("telegram_send called but TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not configured")
         return "Telegram not configured — skipping notification."
 
-    # Resolve thread_id from LangGraph config
+    # Resolve thread_id and automation flag from LangGraph config
     cfg = config.get("configurable", {}) if isinstance(config, dict) else {}
     thread_id_raw = cfg.get("ws_thread_id") or cfg.get("thread_id") or 0
+    is_automation = bool(cfg.get("automation_run", False))
     try:
         thread_id = int(thread_id_raw)
     except (TypeError, ValueError):
         thread_id = 0
 
-    # If the user has an active conversation, append thread ID so they know
-    # where this notification came from and can /switch to it later.
+    # Append thread ID only when necessary:
+    # - automations always get it (user needs to know which thread to /switch to)
+    # - regular chat only gets it when there's a clash (different active thread)
+    # - regular chat with matching/no active thread: send clean, no footer
     text_to_send = message
     try:
         from app.db.engine import AsyncSessionLocal
@@ -55,11 +58,17 @@ async def telegram_send(message: str, config: RunnableConfig = None) -> str:
             )
             active = existing.scalars().first()
         logger.info(
-            "telegram_send: thread_id=%s active_thread=%s",
-            thread_id, active.thread_id if active else None,
+            "telegram_send: thread_id=%s active_thread=%s is_automation=%s",
+            thread_id, active.thread_id if active else None, is_automation,
         )
-        if active is not None and active.thread_id != thread_id:
+        clash = active is not None and thread_id and active.thread_id != thread_id
+        if is_automation and thread_id:
+            # Automation/cron: user may not be watching — always show thread ID
             text_to_send = f"{message}\n\n[Thread #{thread_id} — /switch {thread_id} to follow up]"
+        elif clash:
+            # Different thread is active — user needs to know which thread to switch to
+            text_to_send = f"{message}\n\n[Thread #{thread_id} — /switch {thread_id} to follow up]"
+        # else: regular chat (user is present) — send clean, no footer
     except Exception as exc:
         logger.warning("telegram_send: clash check failed: %s", exc)
 
@@ -252,7 +261,8 @@ async def schedule_message(message: str, delay_seconds: int, config: RunnableCon
                             .where(TelegramPendingReply.expires_at > now)
                         )
                         active = existing.scalars().first()
-                    if active is not None and active.thread_id != source_thread_id:
+                    # Scheduled messages are always self-triggered — always show thread ID
+                    if source_thread_id:
                         text_to_send = f"{message}\n\n[Thread #{source_thread_id} — /switch {source_thread_id} to follow up]"
                 except Exception:
                     pass

@@ -165,6 +165,14 @@ async def _handle_incoming(body: dict) -> None:
         db.add(msg)
         await db.commit()
 
+    # Mark as seen in the polling seen-set so the poller doesn't fire automations again
+    try:
+        from app.automations.runtime import _wa_seen_ids, _wa_seen_lock
+        async with _wa_seen_lock:
+            _wa_seen_ids.setdefault(chat_id, set()).add(message_id)
+    except Exception:
+        pass
+
     if group is None or not group.enabled:
         return
 

@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+
+{% block title %}Audit Log — RAION{% endblock %}
+
+{% block content %}
+<div class="min-h-screen bg-gray-50">
+
+  <!-- Top bar -->
+  <header class="bg-white border-b shadow-sm px-6 py-4 flex items-center gap-4">
+    <a href="/" class="text-gray-500 hover:text-gray-800 transition-colors">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M15 19l-7-7 7-7"/>
+      </svg>
+    </a>
+    <h1 class="text-base font-semibold text-gray-800">Permission Audit Log</h1>
+    <span class="ml-auto text-xs text-gray-400">{{ total }} total decisions</span>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-4 py-8">
+
+    {% if entries %}
+    <div class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead>
+            <tr class="bg-gray-50 border-b text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              <th class="px-4 py-3 text-left">Tool</th>
+              <th class="px-4 py-3 text-left">Args</th>
+              <th class="px-4 py-3 text-left">Decision</th>
+              <th class="px-4 py-3 text-left">By</th>
+              <th class="px-4 py-3 text-left">Time</th>
+              <th class="px-4 py-3 text-left">Thread</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            {% for e in entries %}
+            <tr class="hover:bg-gray-50 transition-colors">
+              <!-- Tool name -->
+              <td class="px-4 py-3 font-mono text-xs text-gray-700 whitespace-nowrap">
+                {{ e.tool_name }}
+              </td>
+
+              <!-- Args (truncated) -->
+              <td class="px-4 py-3 text-xs text-gray-500 max-w-xs">
+                <span class="font-mono break-all">{{ e.args_short }}</span>
+              </td>
+
+              <!-- Decision badge -->
+              <td class="px-4 py-3 whitespace-nowrap">
+                {% if e.decision == 'approved' %}
+                <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 border border-green-200">
+                  <span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span>
+                  approved
+                </span>
+                {% elif e.decision == 'denied' %}
+                <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700 border border-red-200">
+                  <span class="w-1.5 h-1.5 rounded-full bg-red-500 inline-block"></span>
+                  denied
+                </span>
+                {% else %}
+                <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
+                  <span class="w-1.5 h-1.5 rounded-full bg-gray-400 inline-block"></span>
+                  auto
+                </span>
+                {% endif %}
+              </td>
+
+              <!-- Decided by -->
+              <td class="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
+                {{ e.decided_by }}
+              </td>
+
+              <!-- Timestamp -->
+              <td class="px-4 py-3 text-xs text-gray-500 whitespace-nowrap font-mono">
+                {{ e.decided_at }}
+              </td>
+
+              <!-- Thread link -->
+              <td class="px-4 py-3 whitespace-nowrap">
+                {% if e.thread_id %}
+                <a href="/?thread={{ e.thread_id }}"
+                   class="text-xs text-blue-600 hover:underline font-mono">
+                  #{{ e.thread_id }}
+                </a>
+                {% else %}
+                <span class="text-xs text-gray-300">—</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Pagination -->
+    {% if total_pages > 1 %}
+    <div class="mt-6 flex items-center justify-center gap-2">
+      {% if page > 1 %}
+      <a href="/audit?page={{ page - 1 }}"
+         class="px-3 py-1.5 rounded-lg border border-gray-300 text-sm text-gray-600
+                hover:bg-gray-50 transition-colors">
+        Previous
+      </a>
+      {% endif %}
+
+      <span class="text-sm text-gray-500">
+        Page {{ page }} of {{ total_pages }}
+      </span>
+
+      {% if page < total_pages %}
+      <a href="/audit?page={{ page + 1 }}"
+         class="px-3 py-1.5 rounded-lg border border-gray-300 text-sm text-gray-600
+                hover:bg-gray-50 transition-colors">
+        Next
+      </a>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% else %}
+    <!-- Empty state -->
+    <div class="flex flex-col items-center justify-center py-24 text-center">
+      <svg class="w-12 h-12 text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0
+                 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0
+                 01.293.707V19a2 2 0 01-2 2z"/>
+      </svg>
+      <p class="text-gray-400 text-sm">No permission decisions recorded yet.</p>
+      <p class="text-gray-300 text-xs mt-1">Decisions appear here as the assistant uses tools.</p>
+    </div>
+    {% endif %}
+
+  </main>
+</div>
+{% endblock %}

@@ -1,91 +1,67 @@
-"""Phase 5: allowlist-gated shell command tool.
+"""Shell command tool — unrestricted but with a destructive-action safety rule.
 
-Only commands whose base command (first token) is on the allowlist are permitted.
-Everything else raises NotAllowlistedError so the LLM sees a clear refusal.
+The agent may run any command. However, it MUST ask the user before running
+anything destructive (deleting files/folders, force-pushing git, dropping
+databases, killing processes, formatting drives, uninstalling packages, etc.).
+
+Hard-blocked at the tool layer (bypass the model entirely): a small denylist of
+catastrophic commands we never want to run from the agent, regardless of what
+the permission policy decides.
 """
 from __future__ import annotations
 
 import asyncio
-import shlex
+import re
 from typing import Annotated
 
 from langchain_core.tools import tool
 
+# Timeout in seconds for any shell command
+_TIMEOUT_SECONDS = 120
 
-class NotAllowlistedError(ValueError):
-    """Raised when the requested command is not on the allowlist."""
-
-
-# ---------------------------------------------------------------------------
-# Allowlist — exact base-command strings that are permitted.
-# This is an allowlist (not a denylist): anything not here is blocked.
-# ---------------------------------------------------------------------------
-_ALLOWED_BASE_COMMANDS: frozenset[str] = frozenset(
-    [
-        "ls",
-        "dir",
-        "cat",
-        "type",
-        "git",   # only "git status / log / diff" sub-commands — checked below
-        "python",
-        "pwd",
-        "whoami",
-        "echo",
-    ]
+# Commands we refuse outright. Matching is substring + word-boundary aware.
+# These are checked AFTER the permission policy — so even if the user clicked
+# "approve", these still don't execute.
+_HARD_BLOCK_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\brm\s+-[rf]+\s+[\"']?/\S*", re.IGNORECASE),        # rm -rf /...
+    re.compile(r"\brm\s+-[rf]+\s+[\"']?[A-Za-z]:[\\/]", re.IGNORECASE),  # rm -rf C:\ D:\
+    re.compile(r"\bmkfs\b", re.IGNORECASE),                          # filesystem format
+    re.compile(r"\bformat\s+[A-Za-z]:", re.IGNORECASE),              # Windows format X:
+    re.compile(r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:"),   # fork bomb
+    re.compile(r"\bdd\b[^|]*\bof=/dev/(sd[a-z]|nvme|disk)", re.IGNORECASE),
+    re.compile(r"\bshutdown\b|\breboot\b|\bhalt\b", re.IGNORECASE),
+    re.compile(r"\bcipher\s+/w", re.IGNORECASE),                     # Windows secure-wipe
+    re.compile(r"\bdel\s+/[a-z]?/?\s*[A-Za-z]:[\\/]", re.IGNORECASE),  # del /s /q C:\
+    re.compile(r"Remove-Item.*-Recurse.*(-Force)?\s+[\"']?[A-Za-z]:[\\/]", re.IGNORECASE),
+    re.compile(r"netsh\s+advfirewall", re.IGNORECASE),               # firewall tampering
+    re.compile(r"\biptables\s+-F\b", re.IGNORECASE),
 )
 
-# For "git", only these sub-commands are allowed
-_ALLOWED_GIT_SUBCOMMANDS: frozenset[str] = frozenset(["status", "log", "diff"])
 
-# Timeout in seconds for any shell command
-_TIMEOUT_SECONDS = 30
-
-
-def _validate_command(command: str) -> None:
-    """Raise NotAllowlistedError if *command* is not permitted."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError as e:
-        raise NotAllowlistedError(f"Could not parse command: {e}")
-
-    if not tokens:
-        raise NotAllowlistedError("Empty command.")
-
-    base = tokens[0].lower()
-    # Strip path prefix (e.g. /usr/bin/git → git)
-    base = base.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-
-    if base not in _ALLOWED_BASE_COMMANDS:
-        raise NotAllowlistedError(
-            f"Command '{base}' is not on the allowlist. "
-            f"Allowed commands: {', '.join(sorted(_ALLOWED_BASE_COMMANDS))}."
-        )
-
-    # Extra check for git: only status / log / diff
-    if base == "git":
-        if len(tokens) < 2 or tokens[1].lower() not in _ALLOWED_GIT_SUBCOMMANDS:
-            sub = tokens[1] if len(tokens) >= 2 else "<none>"
-            raise NotAllowlistedError(
-                f"'git {sub}' is not allowed. "
-                f"Only: git {', git '.join(sorted(_ALLOWED_GIT_SUBCOMMANDS))}."
-            )
+def _hard_block_reason(command: str) -> str | None:
+    for pat in _HARD_BLOCK_PATTERNS:
+        if pat.search(command):
+            return pat.pattern
+    return None
 
 
 @tool
 def run_shell_command(
-    command: Annotated[str, "Shell command to run. Must be on the allowlist."],
+    command: Annotated[str, "Shell command to run in the system terminal."],
 ) -> str:
-    """Run an allowlisted read-only shell command and return its output.
+    """Run any shell command and return its output.
 
-    Allowed commands: ls, dir, cat, type, git status/log/diff,
-    python --version, pwd, whoami, echo.
-
-    Any command not on the allowlist is blocked automatically.
+    SAFETY RULE: Before running anything destructive (rm -rf, drop database,
+    force push, kill process, uninstall, format, etc.) — stop and ask the user
+    for explicit confirmation first. For read-only or constructive commands,
+    proceed directly.
     """
-    try:
-        _validate_command(command)
-    except NotAllowlistedError as e:
-        return f"Blocked: {e}"
+    blocked = _hard_block_reason(command)
+    if blocked:
+        return (
+            f"Command blocked by safety policy (pattern: {blocked}). "
+            "This command was refused at the tool layer — change the approach."
+        )
 
     try:
         result = asyncio.get_event_loop().run_until_complete(
@@ -104,6 +80,7 @@ def run_shell_command(
                 capture_output=True,
                 text=True,
                 timeout=_TIMEOUT_SECONDS,
+                stdin=subprocess.DEVNULL,
             )
             output = proc.stdout
             if proc.returncode != 0 and proc.stderr:
@@ -121,6 +98,7 @@ async def _run_async(command: str) -> str:
         command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.DEVNULL,
     )
     try:
         stdout, stderr = await asyncio.wait_for(

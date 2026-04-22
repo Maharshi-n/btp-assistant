@@ -59,6 +59,17 @@
                            focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"></textarea>
         </div>
 
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Model</label>
+          <select id="cmd-model"
+                  class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm
+                         focus:outline-none focus:ring-2 focus:ring-blue-500">
+            {% for m in available_models %}
+            <option value="{{ m }}" {% if m == 'gpt-4o-mini' %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
         <div class="flex justify-end">
           <button onclick="createCommand()"
                   class="px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-medium
@@ -153,10 +164,12 @@
     if (!name) { showError('Command name is required.'); return; }
     if (!description) { showError('Description is required.'); return; }
 
+    const model = document.getElementById('cmd-model').value;
     const form = new FormData();
     form.append('name', name);
     form.append('description', description);
     form.append('preset_prompt', preset);
+    form.append('model', model);
 
     try {
       const resp = await fetch('/api/telegram-commands', { method: 'POST', body: form });

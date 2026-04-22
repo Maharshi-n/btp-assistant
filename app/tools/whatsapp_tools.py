@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone, timedelta
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, and_
 
 from app.db.engine import AsyncSessionLocal
 from app.db.models import WhatsAppGroup, WhatsAppMessage
@@ -194,18 +195,29 @@ async def whatsapp_read_messages(chat_id: str, count: int = 20) -> str:
     lines: list[str] = []
     for m in messages:
         sender = m.get("senderName") or m.get("senderId", "unknown")
-        msg_type = m.get("type", "text")
+        # Green API uses "typeMessage" for message type, "type" for direction (incoming/outgoing)
+        msg_type = m.get("typeMessage") or m.get("type", "text")
+        direction = m.get("type", "")
         timestamp = m.get("timestamp", "")
         if msg_type == "textMessage":
             text = m.get("textMessage", "")
         elif msg_type == "extendedTextMessage":
-            text = m.get("extendedTextMessage", {}).get("text", "")
+            text = (
+                m.get("extendedTextMessage", {}).get("text", "")
+                or m.get("textMessage", "")
+            )
         elif msg_type in ("imageMessage", "videoMessage", "documentMessage"):
-            caption = m.get(msg_type, {}).get("caption", "")
-            text = f"[{msg_type.replace('Message','')}] {caption}".strip()
+            inner = m.get(msg_type, {})
+            caption = inner.get("caption", "") if isinstance(inner, dict) else ""
+            text = f"[{msg_type.replace('Message', '')}] {caption}".strip()
+        elif msg_type == "audioMessage":
+            text = "[audio]"
+        elif msg_type == "stickerMessage":
+            text = "[sticker]"
         else:
             text = f"[{msg_type}]"
-        lines.append(f"[{timestamp}] {sender}: {text}")
+        prefix = f"({'out' if direction == 'outgoing' else 'in'})"
+        lines.append(f"[{timestamp}] {prefix} {sender}: {text}")
 
     return "\n".join(lines)
 
@@ -227,3 +239,126 @@ async def whatsapp_get_groups() -> str:
 
     lines = [f"- {g.name}: {g.chat_id} ({'enabled' if g.enabled else 'disabled'})" for g in groups]
     return "Registered WhatsApp groups:\n" + "\n".join(lines)
+
+
+class WhatsAppFetchMessagesInput(BaseModel):
+    chat_id: str = Field(
+        default="",
+        description=(
+            "Green API chat ID of a specific group/contact to fetch from. "
+            "Leave empty ('') to fetch from ALL registered groups."
+        ),
+    )
+    hours_back: float = Field(
+        default=3.0,
+        description="How many hours back to fetch messages. Ignored when since_midnight=True.",
+        gt=0,
+        le=720,
+    )
+    since_midnight: bool = Field(
+        default=False,
+        description=(
+            "If True, fetch messages from midnight today (IST/local server time) until now. "
+            "Overrides hours_back. Use for 'today', 'today's messages', etc."
+        ),
+    )
+    limit: int = Field(
+        default=500,
+        description="Maximum total messages to return across all groups.",
+        ge=1,
+        le=2000,
+    )
+
+
+@tool(args_schema=WhatsAppFetchMessagesInput)
+async def whatsapp_fetch_messages(
+    chat_id: str = "",
+    hours_back: float = 3.0,
+    since_midnight: bool = False,
+    limit: int = 500,
+) -> str:
+    """Fetch WhatsApp messages stored in the local database for a given time window.
+
+    Unlike whatsapp_read_messages (which calls the Green API), this reads from
+    RAION's own database — so it includes both incoming and outgoing messages,
+    works for any time range, and never misses messages due to API limits.
+
+    Use this for:
+    - Summarizing group chats over a period ("last 3 hours", "today")
+    - Automation reports across multiple groups
+    - Queries like "messages that came today from XYZ group"
+
+    Returns messages grouped by group name, with sender, direction, and timestamp.
+    Returns a clear "No messages" response if the window is empty — safe for automations
+    that should skip writing logs when nothing happened.
+    """
+    now = datetime.now(timezone.utc)
+
+    if since_midnight:
+        # Midnight in local server time expressed as UTC
+        local_now = datetime.now()
+        midnight_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        since = midnight_local.astimezone(timezone.utc)
+    else:
+        since = now - timedelta(hours=hours_back)
+
+    async with AsyncSessionLocal() as db:
+        # Build group name lookup: chat_id → name
+        grp_result = await db.execute(select(WhatsAppGroup))
+        groups = grp_result.scalars().all()
+        group_names: dict[str, str] = {g.chat_id: g.name for g in groups}
+
+        # Determine which chat_ids to query
+        if chat_id:
+            target_ids = [chat_id]
+        else:
+            # All registered groups (only enabled ones for reporting)
+            target_ids = [g.chat_id for g in groups if g.enabled]
+
+        if not target_ids:
+            return "No WhatsApp groups registered or enabled. Add groups at /whatsapp."
+
+        # Query messages in the time window
+        conditions = [
+            WhatsAppMessage.chat_id.in_(target_ids),
+            WhatsAppMessage.created_at >= since,
+            WhatsAppMessage.created_at <= now,
+        ]
+        msg_result = await db.execute(
+            select(WhatsAppMessage)
+            .where(and_(*conditions))
+            .order_by(WhatsAppMessage.chat_id, WhatsAppMessage.created_at)
+            .limit(limit)
+        )
+        messages = msg_result.scalars().all()
+
+    if not messages:
+        window_desc = "today" if since_midnight else f"the last {hours_back:.4g}h"
+        if chat_id:
+            label = group_names.get(chat_id, chat_id)
+            return f"No messages from '{label}' in {window_desc}."
+        return f"No messages from any group in {window_desc}."
+
+    # Group messages by chat_id for readable output
+    from collections import defaultdict
+    grouped: dict[str, list[WhatsAppMessage]] = defaultdict(list)
+    for m in messages:
+        grouped[m.chat_id].append(m)
+
+    window_desc = "today (since midnight)" if since_midnight else f"last {hours_back:.4g}h"
+    sections: list[str] = [
+        f"WhatsApp messages — {window_desc} | total: {len(messages)}\n"
+    ]
+
+    for cid, msgs in grouped.items():
+        group_label = group_names.get(cid, cid)
+        sections.append(f"━━ {group_label} ({len(msgs)} messages) ━━")
+        for m in msgs:
+            ts = m.created_at.strftime("%H:%M") if m.created_at else "?"
+            direction = "→" if m.direction == "outgoing" else "←"
+            sender = m.sender_name or m.sender_id or "unknown"
+            text = m.text or f"[{m.message_type}]"
+            sections.append(f"  {ts} {direction} {sender}: {text}")
+        sections.append("")
+
+    return "\n".join(sections)

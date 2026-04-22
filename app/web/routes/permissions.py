@@ -20,7 +20,7 @@ from app.agents.supervisor import get_graph
 from app.db.engine import AsyncSessionLocal
 from app.db.models import PermissionAudit, User
 from app.web.deps import require_user
-from app.web.routes.chat import _stream_langgraph, get_pending_permissions
+from app.web.routes.chat import _stream_langgraph, _register_task, _unregister_task, get_pending_permissions
 from app.web.routes.ws import manager as ws_manager
 from langgraph.types import Command
 
@@ -72,7 +72,18 @@ async def decide_permission(
 
     # Resume the graph — pass the decision back to interrupt()
     resume_cmd = Command(resume={"decision": decision, "request_id": request_id})
-    background_tasks.add_task(_stream_langgraph, thread_id, model, resume_cmd)
+
+    async def _tracked_resume(tid: int, mdl: str, cmd: Command) -> None:
+        import asyncio
+        task = asyncio.current_task()
+        if task:
+            _register_task(tid, task)
+        try:
+            await _stream_langgraph(tid, mdl, cmd)
+        finally:
+            _unregister_task(tid)
+
+    background_tasks.add_task(_tracked_resume, thread_id, model, resume_cmd)
 
     return {"status": "ok", "decision": decision}
 
@@ -87,17 +98,24 @@ async def _log_user_decision(
 ) -> None:
     """Write the user's approve/deny to permission_audit.  Best-effort."""
     try:
-        async with AsyncSessionLocal() as db:
-            row = PermissionAudit(
-                tool_name=tool_name,
-                args_json=json.dumps(tool_args, default=str),
-                decision=decision,
-                decided_by="user",
-                decided_at=datetime.now(timezone.utc),
-                thread_id=thread_id,
-                request_id=request_id,
+        from sqlalchemy import text
+        from app.db.engine import engine
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO permission_audit "
+                    "(tool_name, args_json, decision, decided_by, decided_at, thread_id, request_id) "
+                    "VALUES (:tool_name, :args_json, :decision, :decided_by, :decided_at, :thread_id, :request_id)"
+                ),
+                {
+                    "tool_name": tool_name,
+                    "args_json": json.dumps(tool_args, default=str),
+                    "decision": decision,
+                    "decided_by": "user",
+                    "decided_at": datetime.now(timezone.utc).isoformat(),
+                    "thread_id": thread_id,
+                    "request_id": request_id,
+                },
             )
-            db.add(row)
-            await db.commit()
-    except Exception:
-        logger.exception("Failed to log permission audit for request %s", request_id)
+    except Exception as exc:
+        logger.warning("Failed to log permission audit for request %s: %s", request_id, exc)

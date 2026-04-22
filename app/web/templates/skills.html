@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+
+{% block title %}Skills — RAION{% endblock %}
+
+{% block content %}
+<div class="min-h-screen bg-gray-50">
+
+  <!-- Top bar -->
+  <header class="bg-white border-b shadow-sm px-6 py-4 flex items-center gap-4">
+    <a href="/" class="text-gray-500 hover:text-gray-800 transition-colors">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+      </svg>
+    </a>
+    <h1 class="text-base font-semibold text-gray-800">Skills</h1>
+    <span class="ml-auto text-xs text-gray-400" id="count-label">
+      {{ skills|length }} skill{{ '' if skills|length == 1 else 's' }}
+    </span>
+  </header>
+
+  <main class="max-w-2xl mx-auto px-4 py-8 space-y-6">
+
+    <!-- Upload card -->
+    <section class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="px-6 py-4 border-b bg-gray-50 flex items-center gap-2">
+        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+        </svg>
+        <h2 class="text-sm font-semibold text-gray-700">Add Skill</h2>
+      </div>
+      <div class="px-6 py-5 space-y-4">
+
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Skill name <span class="text-gray-400">(lowercase, no spaces)</span></label>
+          <input id="skill-name" type="text" placeholder="e.g. negotiation, regex_patterns"
+                 class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm
+                        focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Trigger description <span class="text-gray-400">(when should RAION use this?)</span></label>
+          <input id="skill-trigger" type="text"
+                 placeholder="e.g. Use when user wants help negotiating salary, contracts or deals"
+                 class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm
+                        focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Skill file <span class="text-gray-400">(.txt, .md, .py, any text format)</span></label>
+          <input id="skill-file" type="file" accept=".txt,.md,.py,.js,.ts,.json,.yaml,.yml,.csv,.html,.xml"
+                 class="w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3
+                        file:rounded-lg file:border-0 file:text-sm file:font-medium
+                        file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
+        </div>
+
+        <div class="flex justify-end">
+          <button onclick="uploadSkill()"
+                  class="px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-medium
+                         hover:bg-blue-700 transition-colors">
+            Upload Skill
+          </button>
+        </div>
+
+        <p id="upload-error" class="hidden text-xs text-red-600"></p>
+        <p id="upload-success" class="hidden text-xs text-green-600"></p>
+      </div>
+    </section>
+
+    <!-- Skills list -->
+    <div id="skills-list" class="space-y-3">
+      {% if not skills %}
+      <div id="empty-state" class="text-center py-12 text-gray-400 text-sm">
+        No skills yet. Upload one above.
+      </div>
+      {% else %}
+      {% for s in skills %}
+      <div id="skill-{{ s.id }}" class="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-4">
+        <div class="flex items-start gap-3">
+          <svg class="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+          </svg>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-mono text-sm font-semibold text-gray-800">{{ s.name }}</span>
+              {% if s.enabled %}
+              <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">enabled</span>
+              {% else %}
+              <span class="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">disabled</span>
+              {% endif %}
+            </div>
+            <p class="text-xs text-gray-500 mt-1 leading-relaxed">{{ s.trigger_description }}</p>
+            <p class="text-xs text-gray-400 mt-1">{{ s.file_path }}</p>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            {% if s.enabled %}
+            <button onclick="toggleSkill({{ s.id }}, false)"
+                    class="text-xs text-gray-500 hover:text-gray-800 border border-gray-200
+                           px-2 py-1 rounded-lg transition-colors">
+              Disable
+            </button>
+            {% else %}
+            <button onclick="toggleSkill({{ s.id }}, true)"
+                    class="text-xs text-blue-600 hover:text-blue-800 border border-blue-200
+                           px-2 py-1 rounded-lg transition-colors">
+              Enable
+            </button>
+            {% endif %}
+            <button onclick="deleteSkill({{ s.id }})"
+                    class="text-gray-300 hover:text-red-500 transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+      {% endif %}
+    </div>
+
+  </main>
+</div>
+
+<script>
+  let skillCount = {{ skills|length }};
+
+  function updateCountLabel() {
+    const label = document.getElementById('count-label');
+    label.textContent = skillCount + ' skill' + (skillCount !== 1 ? 's' : '');
+  }
+
+  async function uploadSkill() {
+    const name = document.getElementById('skill-name').value.trim();
+    const trigger = document.getElementById('skill-trigger').value.trim();
+    const fileInput = document.getElementById('skill-file');
+    const errorEl = document.getElementById('upload-error');
+    const successEl = document.getElementById('upload-success');
+
+    errorEl.classList.add('hidden');
+    successEl.classList.add('hidden');
+
+    if (!name) { showError('Skill name is required.'); return; }
+    if (!trigger) { showError('Trigger description is required.'); return; }
+    if (!fileInput.files.length) { showError('Please select a file.'); return; }
+
+    const form = new FormData();
+    form.append('name', name);
+    form.append('trigger_description', trigger);
+    form.append('file', fileInput.files[0]);
+
+    try {
+      const resp = await fetch('/api/skills', { method: 'POST', body: form });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || 'Upload failed');
+
+      // Clear inputs
+      document.getElementById('skill-name').value = '';
+      document.getElementById('skill-trigger').value = '';
+      fileInput.value = '';
+
+      successEl.textContent = `Skill "${data.name}" uploaded successfully.`;
+      successEl.classList.remove('hidden');
+
+      // Remove empty state
+      const empty = document.getElementById('empty-state');
+      if (empty) empty.remove();
+
+      // Prepend card
+      const list = document.getElementById('skills-list');
+      const card = document.createElement('div');
+      card.id = 'skill-' + data.id;
+      card.className = 'bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-4';
+      card.innerHTML = `
+        <div class="flex items-start gap-3">
+          <svg class="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+          </svg>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="font-mono text-sm font-semibold text-gray-800">${escapeHtml(data.name)}</span>
+              <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">enabled</span>
+            </div>
+            <p class="text-xs text-gray-500 mt-1 leading-relaxed">${escapeHtml(data.trigger_description)}</p>
+            <p class="text-xs text-gray-400 mt-1">${escapeHtml(data.file_path)}</p>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <button onclick="toggleSkill(${data.id}, false)"
+                    class="text-xs text-gray-500 hover:text-gray-800 border border-gray-200
+                           px-2 py-1 rounded-lg transition-colors">
+              Disable
+            </button>
+            <button onclick="deleteSkill(${data.id})"
+                    class="text-gray-300 hover:text-red-500 transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+        </div>`;
+      list.prepend(card);
+      skillCount++;
+      updateCountLabel();
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+
+  async function toggleSkill(id, enable) {
+    const action = enable ? 'enable' : 'disable';
+    try {
+      const resp = await fetch(`/api/skills/${id}/${action}`, { method: 'POST' });
+      if (!resp.ok) throw new Error('Failed');
+      // Reload page to reflect updated badge/button
+      location.reload();
+    } catch (err) {
+      alert('Could not ' + action + ' skill: ' + err.message);
+    }
+  }
+
+  async function deleteSkill(id) {
+    if (!confirm('Delete this skill? The file will be removed from disk.')) return;
+    try {
+      const resp = await fetch('/api/skills/' + id, { method: 'DELETE' });
+      if (!resp.ok) throw new Error('Failed');
+      const card = document.getElementById('skill-' + id);
+      if (card) card.remove();
+      skillCount--;
+      updateCountLabel();
+      if (skillCount === 0) {
+        document.getElementById('skills-list').innerHTML =
+          '<div id="empty-state" class="text-center py-12 text-gray-400 text-sm">No skills yet. Upload one above.</div>';
+      }
+    } catch (err) {
+      alert('Could not delete skill: ' + err.message);
+    }
+  }
+
+  function showError(msg) {
+    const el = document.getElementById('upload-error');
+    el.textContent = msg;
+    el.classList.remove('hidden');
+  }
+
+  function escapeHtml(text) {
+    return String(text)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+</script>
+{% endblock %}

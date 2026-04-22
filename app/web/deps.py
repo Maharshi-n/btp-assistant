@@ -33,19 +33,34 @@ async def require_user(
 
     now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
 
-    result = await db.execute(
-        select(Session).where(
-            Session.token == raw_token,
-            Session.expires_at > now,
-        )
-    )
-    db_session = result.scalars().first()
-    if db_session is None:
-        raise NotAuthenticated()
+    # Retry once on asyncpg "different loop" pool errors — the pool self-heals
+    # on the second attempt after discarding the stale connection.
+    for _attempt in range(2):
+        try:
+            result = await db.execute(
+                select(Session).where(
+                    Session.token == raw_token,
+                    Session.expires_at > now,
+                )
+            )
+            db_session = result.scalars().first()
+            if db_session is None:
+                raise NotAuthenticated()
 
-    user_result = await db.execute(select(User).where(User.id == db_session.user_id))
-    user = user_result.scalars().first()
-    if user is None:
-        raise NotAuthenticated()
+            user_result = await db.execute(select(User).where(User.id == db_session.user_id))
+            user = user_result.scalars().first()
+            if user is None:
+                raise NotAuthenticated()
 
-    return user
+            return user
+        except NotAuthenticated:
+            raise
+        except Exception:
+            if _attempt == 1:
+                raise
+            # Stale asyncpg connection — open a fresh session and retry
+            await db.close()
+            from app.db.engine import AsyncSessionLocal
+            db = AsyncSessionLocal()
+
+    raise NotAuthenticated()  # unreachable, satisfies type checker

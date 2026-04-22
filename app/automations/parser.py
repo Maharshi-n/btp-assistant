@@ -82,9 +82,11 @@ fs_new_in_folder:
 whatsapp_group_new:
   {{"chat_id": "<group chat_id ending in @g.us, or empty string for any monitored group>"}}
   Use when: "when a WhatsApp group message arrives", "monitor my WhatsApp group", "on new WhatsApp message"
-  - If user names a specific group, keep chat_id empty and note the group name in action_prompt
-    (the runtime injects the actual chat_id and message at trigger time)
+  - If user names a specific group, keep chat_id empty (the runtime will pass the real chat_id in TRUSTED TRIGGER CONTEXT)
   - If user says "any group" or "all groups", set chat_id to ""
+  - IMPORTANT: When the action is to reply in the same group, the action_prompt MUST say:
+    "Read the TRUSTED TRIGGER CONTEXT block. Use chat_id from that block as the first argument to whatsapp_send."
+    Do NOT tell the supervisor to call whatsapp_get_groups — the chat_id is already in TRUSTED TRIGGER CONTEXT.
 
 whatsapp_keyword_match:
   {{"keywords": "<space or comma separated keywords>"}}
@@ -172,9 +174,33 @@ Do NOT tell the assistant to fetch the message — it already has it. Focus on w
          Summarize the message in one sentence and call telegram_send with that summary plus the sender name."
 
   BAD : "Reply to the WhatsApp message"
-  GOOD: "Read the TRUSTED TRIGGER CONTEXT block above. Note the message_text and sender_name.
-         Determine if the message needs a reply. If yes, call whatsapp_send with chat_id from the
-         TRUSTED block and an appropriate reply message."
+  GOOD: "Read the TRUSTED TRIGGER CONTEXT block above. Note the message_text, sender_name, and chat_id.
+         Call whatsapp_send with chat_id from the TRUSTED block (exactly as shown) and an appropriate reply message."
+
+  RULE for reply automations: ALWAYS use chat_id from TRUSTED TRIGGER CONTEXT — never call whatsapp_get_groups
+  to find it. The chat_id is already provided at trigger time.
+
+FOR CRON WHATSAPP SUMMARY AUTOMATIONS — use whatsapp_fetch_messages (NOT whatsapp_read_messages):
+  whatsapp_fetch_messages reads from RAION's local database. It is the correct tool for:
+  - Periodic summaries ("every 3 hours summarize all groups")
+  - Daily/weekly reports ("today's messages from all groups")
+  - Any automation that aggregates messages over a time window
+
+  Parameters:
+  - chat_id: "" for all groups, or specific chat_id for one group
+  - hours_back: number of hours to look back (e.g. 3.0 for 3-hour windows)
+  - since_midnight: true for "today" queries
+  - limit: max messages (default 500 is fine for most cases)
+
+  The tool returns "No messages in this period" when the window is empty — automations
+  should check for this and skip writing logs if there is nothing to report.
+
+  GOOD action_prompt for a 3-hour summary automation:
+  "Call whatsapp_fetch_messages with chat_id='' and hours_back=3.
+   If the result says 'No messages', stop — do not write a log.
+   Otherwise, write a concise group-by-group summary (group name, message count, key topics/updates)
+   and append it to whatsapp_logs/summary_<YYYY-MM-DD>.txt in my workspace with a timestamp header.
+   Then call telegram_send with a brief digest of the most important updates across all groups."
 
 ━━━ TELEGRAM NOTIFICATIONS ━━━
 Two tools are available for Telegram: telegram_send and telegram_ask.

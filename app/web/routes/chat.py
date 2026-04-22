@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -19,6 +20,64 @@ from app.web.deps import require_user
 from app.web.routes.ws import manager as ws_manager
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_messages(messages: list) -> list:
+    """Remove orphaned ToolMessages that have no preceding AIMessage with tool_calls.
+
+    OpenAI rejects a conversation where a ToolMessage exists without a matching
+    tool_call in the immediately preceding AI turn. This happens when the server
+    crashes or restarts mid-run: the tool result gets persisted but the AIMessage
+    that triggered it didn't (or vice versa). Strip any such orphans so the
+    history is always valid before sending to the LLM.
+    """
+    # Collect tool_call IDs that are actually present in AI messages
+    valid_tool_call_ids: set[str] = set()
+    for m in messages:
+        if isinstance(m, AIMessage):
+            for tc in getattr(m, "tool_calls", None) or []:
+                if isinstance(tc, dict) and "id" in tc:
+                    valid_tool_call_ids.add(tc["id"])
+
+    # Also strip AIMessages whose tool_calls have no following ToolMessage
+    # First pass: collect tool_call IDs that DO have a result
+    result_ids: set[str] = set()
+    for m in messages:
+        if hasattr(m, "tool_call_id") and m.tool_call_id:  # ToolMessage
+            result_ids.add(m.tool_call_id)
+
+    sanitized = []
+    for m in messages:
+        if hasattr(m, "tool_call_id") and m.tool_call_id:
+            # ToolMessage — keep only if there's a matching tool_call
+            if m.tool_call_id in valid_tool_call_ids:
+                sanitized.append(m)
+            else:
+                logger.warning(
+                    "sanitize_messages: dropping orphaned ToolMessage tool_call_id=%s",
+                    m.tool_call_id,
+                )
+        elif isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+            # AIMessage with tool_calls — keep only if ALL its tool_calls have results
+            missing = [tc["id"] for tc in m.tool_calls if isinstance(tc, dict) and tc.get("id") not in result_ids]
+            if missing:
+                logger.warning(
+                    "sanitize_messages: dropping AIMessage with unresolved tool_calls %s",
+                    missing,
+                )
+            else:
+                sanitized.append(m)
+        else:
+            sanitized.append(m)
+
+    # Final pass: ensure the sequence never starts with a non-Human message
+    # (can happen if we stripped the human turn that preceded a broken AI turn)
+    while sanitized and not isinstance(sanitized[0], HumanMessage):
+        logger.warning("sanitize_messages: dropping leading non-Human message %s", type(sanitized[0]).__name__)
+        sanitized.pop(0)
+
+    return sanitized
+
 
 router = APIRouter(prefix="/api")
 
@@ -58,6 +117,18 @@ AVAILABLE_MODELS: list[str] = _load_models()
 # ---------------------------------------------------------------------------
 _pending_permissions: dict[str, dict] = {}
 
+# ---------------------------------------------------------------------------
+# In-memory store of running stream tasks
+# Maps thread_id -> asyncio.Task
+# ---------------------------------------------------------------------------
+_running_tasks: dict[int, "asyncio.Task"] = {}
+
+def _register_task(thread_id: int, task: "asyncio.Task") -> None:
+    _running_tasks[thread_id] = task
+
+def _unregister_task(thread_id: int) -> None:
+    _running_tasks.pop(thread_id, None)
+
 
 def get_pending_permissions() -> dict[str, dict]:
     return _pending_permissions
@@ -68,7 +139,7 @@ async def create_thread(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require_user),
 ):
-    thread = Thread(title="New Chat", model="gpt-4o-mini")
+    thread = Thread(title="New Chat", model=app_config.DEFAULT_THREAD_MODEL)
     db.add(thread)
     await db.commit()
     await db.refresh(thread)
@@ -130,15 +201,20 @@ async def get_messages(
 async def _clear_lg_checkpoint(thread_id: int) -> None:
     """Delete the LangGraph checkpoint rows for a thread so the next run starts clean."""
     try:
-        import aiosqlite
-        import app.config as app_config
-        url = app_config.DATABASE_URL
-        db_path = url.split("///", 1)[-1] if ":///" in url else "app.db"
-        async with aiosqlite.connect(db_path) as conn:
-            tid = str(thread_id)
-            await conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (tid,))
-            await conn.execute("DELETE FROM writes WHERE thread_id = ?", (tid,))
-            await conn.commit()
+        from sqlalchemy import text
+        from app.db.engine import AsyncSessionLocal
+        tid = str(thread_id)
+        async with AsyncSessionLocal() as db:
+            for tbl, col in [
+                ("checkpoints", "thread_id"),
+                ("checkpoint_blobs", "thread_id"),
+                ("checkpoint_writes", "thread_id"),
+            ]:
+                try:
+                    await db.execute(text(f"DELETE FROM {tbl} WHERE {col} = :tid"), {"tid": tid})
+                except Exception:
+                    pass
+            await db.commit()
         logger.info("Cleared LangGraph checkpoint for thread %d", thread_id)
     except Exception as exc:
         logger.warning("Failed to clear checkpoint for thread %d: %s", thread_id, exc)
@@ -178,34 +254,38 @@ async def _stream_langgraph(
         # desc() + limit gives us the 30 most recent; reverse for chronological order
         messages = list(reversed(result.scalars().all()))
 
-        lc_messages = [
+        lc_messages = _sanitize_messages([
             HumanMessage(content=m.content) if m.role == "user"
             else AIMessage(content=m.content)
             for m in messages
-        ]
+        ])
 
         graph = get_graph()
         lg_config = {
+            "recursion_limit": 100,
             "configurable": {
                 "thread_id": str(thread_id),
                 "model": model,
-            }
+            },
         }
 
         # Either a fresh invoke with the message history, or a resume after interrupt
         if resume_command is not None:
             graph_input = resume_command
+            logger.info("Resuming LangGraph thread %d with command: %s", thread_id, resume_command)
         else:
             graph_input = {"messages": lc_messages}
 
         full_content: list[str] = []
 
         try:
+            event_count = 0
             async for event in graph.astream_events(
                 graph_input,
                 lg_config,
                 version="v2",
             ):
+                event_count += 1
                 event_type: str = event.get("event", "")
                 name: str = event.get("name", "")
                 data: dict = event.get("data", {})
@@ -286,6 +366,9 @@ async def _stream_langgraph(
                         },
                     )
 
+        except asyncio.CancelledError:
+            logger.info("Stream cancelled for thread %d after %d events — saving partial content", thread_id, event_count)
+            # Fall through to persist whatever was collected before cancellation
         except openai.AuthenticationError:
             logger.warning("OpenAI AuthenticationError for thread %d", thread_id)
             await ws_manager.send(
@@ -314,8 +397,11 @@ async def _stream_langgraph(
                 thread_id, {"type": "error", "content": "Internal error. Check server logs."}
             )
             return
+        finally:
+            logger.info("Stream finished for thread %d: %d events processed", thread_id, event_count)
+            _unregister_task(thread_id)
 
-        # Persist completed assistant message (only if we got tokens)
+        # Persist completed (or partial, if stopped) assistant message
         if full_content:
             assistant_content = "".join(full_content)
             assistant_msg = Message(
@@ -377,6 +463,15 @@ async def post_message(
     await db.commit()
     await db.refresh(user_msg)
 
+    # Cancel any in-flight stream for this thread (including a permission resume
+    # that was approved but not yet finished). Without this, the new message
+    # would start a second stream while the first is still executing a tool —
+    # causing duplicate tool calls (e.g. two emails sent).
+    existing_task = _running_tasks.get(thread_id)
+    if existing_task and not existing_task.done():
+        existing_task.cancel()
+        logger.info("Cancelled in-flight stream for thread %d before new message", thread_id)
+
     # Clear any stale pending permission requests for this thread.
     # If the user abandoned a previous permission prompt and is now sending a
     # new message, the old interrupt is dead — remove it so it doesn't confuse
@@ -390,7 +485,14 @@ async def post_message(
         logger.warning(
             "No WebSocket connected for thread %d — streaming will be lost", thread_id
         )
-    background_tasks.add_task(_stream_langgraph, thread_id, thread.model)
+
+    async def _tracked_stream(tid: int, mdl: str) -> None:
+        task = asyncio.current_task()
+        if task:
+            _register_task(tid, task)
+        await _stream_langgraph(tid, mdl)
+
+    background_tasks.add_task(_tracked_stream, thread_id, thread.model)
 
     return {
         "user": {
@@ -400,6 +502,29 @@ async def post_message(
             "created_at": user_msg.created_at.isoformat(),
         },
     }
+
+
+@router.get("/threads/{thread_id}/status")
+async def thread_status(
+    thread_id: int,
+    _user: User = Depends(require_user),
+):
+    task = _running_tasks.get(thread_id)
+    generating = bool(task and not task.done())
+    return {"generating": generating}
+
+
+@router.post("/threads/{thread_id}/stop")
+async def stop_thread(
+    thread_id: int,
+    _user: User = Depends(require_user),
+):
+    task = _running_tasks.get(thread_id)
+    if task and not task.done():
+        task.cancel()
+        logger.info("Stop requested for thread %d — task cancelled", thread_id)
+        return {"stopped": True}
+    return {"stopped": False}
 
 
 @router.patch("/threads/{thread_id}")

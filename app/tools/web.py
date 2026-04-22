@@ -19,7 +19,7 @@ from langchain_core.tools import tool
 @tool
 def web_search(
     query: Annotated[str, "Search query to look up on DuckDuckGo"],
-    max_results: Annotated[int, "Maximum number of results to return (default 5)"] = 5,
+    max_results: Annotated[int, "Maximum number of results to return (default 8)"] = 8,
 ) -> str:
     """Search the web using DuckDuckGo and return a list of results with titles, URLs, and snippets."""
     try:
@@ -87,21 +87,34 @@ def web_fetch(
             "Mozilla/5.0 (compatible; BTPAssistant/1.0; +https://github.com/maharshi)"
         )
     }
+    _MAX_BYTES = 2_000_000  # 2 MB hard cap on raw download
     try:
         with httpx.Client(follow_redirects=True, timeout=20) as client:
-            response = client.get(url, headers=headers)
-            response.raise_for_status()
+            with client.stream("GET", url, headers=headers) as response:
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                chunks: list[bytes] = []
+                total = 0
+                for chunk in response.iter_bytes():
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total >= _MAX_BYTES:
+                        break
+                raw = b"".join(chunks)
     except httpx.HTTPStatusError as e:
         return f"Error: HTTP {e.response.status_code} when fetching '{url}'."
     except httpx.RequestError as e:
         return f"Error fetching '{url}': {e}"
 
-    content_type = response.headers.get("content-type", "")
+    try:
+        body = raw.decode("utf-8", errors="replace")
+    except Exception:
+        body = raw.decode("latin-1", errors="replace")
+
     if "html" in content_type:
-        text = _extract_text(response.text)
+        text = _extract_text(body)
     else:
-        # For plain text, JSON, etc. — return as-is
-        text = response.text
+        text = body
 
     if len(text) > max_chars:
         text = text[:max_chars] + f"\n\n[... truncated at {max_chars} characters]"

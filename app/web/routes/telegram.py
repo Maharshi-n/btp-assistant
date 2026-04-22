@@ -13,7 +13,7 @@ import app.config as app_config
 from app.db.engine import AsyncSessionLocal
 import httpx
 
-from app.db.models import Message, TelegramPendingFile, TelegramPendingFileItem, TelegramPendingReply, Thread
+from app.db.models import Message, TelegramPendingReply, Thread
 
 logger = logging.getLogger(__name__)
 
@@ -88,111 +88,6 @@ async def _download_telegram_file(token: str, message: dict) -> tuple[str, str] 
         return None
 
 
-# Keywords that suggest the user is about to send a file
-_FILE_HINT_KEYWORDS = {
-    "upload", "uploading", "sending", "will send", "attaching", "file",
-    "document", "pdf", "image", "photo", "here is", "here's", "check this",
-}
-
-
-def _text_hints_file(text: str) -> bool:
-    """Return True if the text suggests a file is about to be sent."""
-    lower = text.lower()
-    return any(kw in lower for kw in _FILE_HINT_KEYWORDS)
-
-
-async def _store_pending_file(
-    chat_id: str,
-    intent_text: str,
-    thread_id: int | None = None,
-    conversation_id: int | None = None,
-) -> None:
-    """Upsert a TelegramPendingFile row for this chat_id."""
-    expires = datetime.now(timezone.utc) + timedelta(minutes=10)
-    async with AsyncSessionLocal() as db:
-        await db.execute(
-            delete(TelegramPendingFile).where(TelegramPendingFile.chat_id == chat_id)
-        )
-        db.add(TelegramPendingFile(
-            chat_id=chat_id,
-            intent_text=intent_text,
-            thread_id=thread_id,
-            conversation_id=conversation_id,
-            expires_at=expires,
-        ))
-        await db.commit()
-
-
-async def _get_and_clear_pending_file(chat_id: str) -> dict | None:
-    """Return pending file intent dict and delete the row. Returns None if none exists."""
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(TelegramPendingFile)
-            .where(TelegramPendingFile.chat_id == chat_id)
-            .where(TelegramPendingFile.expires_at > datetime.now(timezone.utc))
-        )
-        row = result.scalars().first()
-        if row is None:
-            return None
-        data = {
-            "intent_text": row.intent_text,
-            "thread_id": row.thread_id,
-            "conversation_id": row.conversation_id,
-        }
-        await db.execute(
-            delete(TelegramPendingFile).where(TelegramPendingFile.chat_id == chat_id)
-        )
-        await db.commit()
-        return data
-
-
-async def _add_pending_file_item(chat_id: str, filename: str, file_path: str) -> int:
-    """Append one downloaded file to the multi-file accumulation queue.
-
-    Returns the total number of accumulated files for this chat_id (after adding).
-    """
-    expires = datetime.now(timezone.utc) + timedelta(minutes=15)
-    async with AsyncSessionLocal() as db:
-        db.add(TelegramPendingFileItem(
-            chat_id=chat_id,
-            filename=filename,
-            file_path=file_path,
-            expires_at=expires,
-        ))
-        await db.commit()
-        result = await db.execute(
-            select(TelegramPendingFileItem)
-            .where(TelegramPendingFileItem.chat_id == chat_id)
-            .where(TelegramPendingFileItem.expires_at > datetime.now(timezone.utc))
-        )
-        return len(result.scalars().all())
-
-
-async def _get_and_clear_pending_file_items(chat_id: str) -> list[dict]:
-    """Return all accumulated file items for this chat_id and delete them.
-
-    Returns a list of dicts with 'filename' and 'file_path' keys.
-    Returns an empty list if none exist.
-    """
-    now = datetime.now(timezone.utc)
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(TelegramPendingFileItem)
-            .where(TelegramPendingFileItem.chat_id == chat_id)
-            .where(TelegramPendingFileItem.expires_at > now)
-            .order_by(TelegramPendingFileItem.created_at.asc())
-        )
-        rows = result.scalars().all()
-        if not rows:
-            return []
-        items = [{"filename": r.filename, "file_path": r.file_path} for r in rows]
-        await db.execute(
-            delete(TelegramPendingFileItem).where(TelegramPendingFileItem.chat_id == chat_id)
-        )
-        await db.commit()
-        return items
-
-
 async def _transcribe_voice(file_path: str) -> str | None:
     """Transcribe a voice note using OpenAI Whisper. Returns transcript or None on failure."""
     from openai import AsyncOpenAI
@@ -231,7 +126,7 @@ async def _parse_reminder_datetime(text: str) -> datetime | None:
     try:
         client = AsyncOpenAI(api_key=_cfg.OPENAI_API_KEY)
         resp = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=app_config.DEFAULT_THREAD_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=30,
             temperature=0,
@@ -275,8 +170,9 @@ async def _parse_and_schedule_reminder(remind_text: str, chat_id: str, token: st
         max_instances=1,
     )
 
-    # Human-friendly confirmation
-    local_str = fire_at.strftime("%b %d at %H:%M UTC")
+    # Human-friendly confirmation in IST
+    ist = timezone(timedelta(hours=5, minutes=30))
+    local_str = fire_at.astimezone(ist).strftime("%b %d at %I:%M %p IST")
     return f"Reminder set for {local_str}."
 
 
@@ -296,7 +192,7 @@ async def _fire_reminder(chat_id: str, token: str | None, message: str) -> None:
 
     try:
         async with AsyncSessionLocal() as db:
-            thread = Thread(title=f"Reminder: {message[:50]}", model="gpt-4o-mini")
+            thread = Thread(title=f"Reminder: {message[:50]}", model=app_config.DEFAULT_THREAD_MODEL)
             db.add(thread)
             await db.commit()
             await db.refresh(thread)
@@ -364,6 +260,87 @@ def _is_end_reply(text: str) -> bool:
     return text.lower().strip().rstrip("!.") in _END_PHRASES
 
 
+_IDLE_TIMEOUT_SECONDS = 120  # close thread after 2 min of inactivity
+
+
+def _idle_job_id(chat_id: str) -> str:
+    return f"tg_idle_{chat_id}"
+
+
+def _schedule_idle_close(chat_id: str, thread_id: int) -> None:
+    """Schedule (or reschedule) a 2-min idle-close job for this chat."""
+    try:
+        from app.automations.runtime import get_scheduler
+        from apscheduler.triggers.date import DateTrigger
+
+        scheduler = get_scheduler()
+        if scheduler is None or not scheduler.running:
+            return
+
+        fire_at = datetime.now(timezone.utc) + timedelta(seconds=_IDLE_TIMEOUT_SECONDS)
+        scheduler.add_job(
+            _fire_idle_close,
+            trigger=DateTrigger(run_date=fire_at),
+            id=_idle_job_id(chat_id),
+            args=[chat_id, thread_id],
+            replace_existing=True,
+            max_instances=1,
+        )
+    except Exception as exc:
+        logger.warning("_schedule_idle_close: failed: %s", exc)
+
+
+def _cancel_idle_close(chat_id: str) -> None:
+    """Cancel any pending idle-close job for this chat (user sent a message)."""
+    try:
+        from app.automations.runtime import get_scheduler
+
+        scheduler = get_scheduler()
+        if scheduler is None or not scheduler.running:
+            return
+        job = scheduler.get_job(_idle_job_id(chat_id))
+        if job:
+            job.remove()
+    except Exception as exc:
+        logger.warning("_cancel_idle_close: failed: %s", exc)
+
+
+async def _fire_idle_close(chat_id: str, thread_id: int) -> None:
+    """APScheduler job: clear the pending reply and notify the user."""
+    token = app_config.TELEGRAM_BOT_TOKEN
+    try:
+        async with AsyncSessionLocal() as db:
+            # Only close if the pending reply still points to this thread
+            now = datetime.now(timezone.utc)
+            result = await db.execute(
+                select(TelegramPendingReply)
+                .where(TelegramPendingReply.chat_id == chat_id)
+                .where(TelegramPendingReply.expires_at > now)
+            )
+            active = result.scalars().first()
+            if active is None or active.thread_id != thread_id:
+                return  # thread already switched or closed
+            await db.execute(
+                delete(TelegramPendingReply).where(TelegramPendingReply.chat_id == chat_id)
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.warning("_fire_idle_close: db error: %s", exc)
+        return
+
+    if token:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat_id, "text": "Thread closed due to inactivity. Send a message anytime to start a new one."},
+                )
+        except Exception as exc:
+            logger.warning("_fire_idle_close: send failed: %s", exc)
+
+    logger.info("_fire_idle_close: closed idle thread #%s for chat %s", thread_id, chat_id)
+
+
 async def _register_pending_reply(
     chat_id: str,
     thread_id: int,
@@ -385,6 +362,7 @@ async def _register_pending_reply(
         )
         db.add(pending)
         await db.commit()
+    _schedule_idle_close(chat_id, thread_id)
 
 
 async def _register_or_notify_clash(
@@ -473,7 +451,10 @@ async def _run_direct_thread(user_reply: str, db_thread_id: int, file_context: s
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     from app.agents.supervisor import get_graph
 
-    lg_thread_id = str(db_thread_id)
+    # Use a separate LangGraph checkpoint namespace for Telegram threads so that
+    # broken web-UI state (dangling tool calls, corrupt windows) never contaminates
+    # Telegram runs and vice versa.
+    lg_thread_id = f"tg_{db_thread_id}"
 
     # Tag the message as coming from Telegram — silent context for the agent
     tagged_reply = f"[via Telegram] {user_reply}"
@@ -481,7 +462,7 @@ async def _run_direct_thread(user_reply: str, db_thread_id: int, file_context: s
     # Persist user reply into the DB thread so it shows in the UI (without the tag)
     async with AsyncSessionLocal() as db:
         thread = await db.get(Thread, db_thread_id)
-        model = thread.model if thread else "gpt-4o-mini"
+        model = thread.model if thread else app_config.DEFAULT_THREAD_MODEL
         msg = Message(
             thread_id=db_thread_id,
             role="user",
@@ -493,12 +474,18 @@ async def _run_direct_thread(user_reply: str, db_thread_id: int, file_context: s
 
     graph = get_graph()
     lg_config = {
+        # LangGraph default recursion_limit is 25. For tool-heavy tasks
+        # (especially flaky ones like Playwright with retries) that's too low
+        # and triggers GraphRecursionError before our own bounds fire.
+        # Our supervisor enforces MAX_TOOL_CALLS=50 + 10-min wall clock, so
+        # 100 here is just an outer safety net.
+        "recursion_limit": 100,
         "configurable": {
             "thread_id": lg_thread_id,
             "ws_thread_id": db_thread_id,
             "model": model,
             "automation_run": True,
-        }
+        },
     }
 
     lc_messages: list = [HumanMessage(content=tagged_reply)]
@@ -542,7 +529,25 @@ async def _run_direct_thread(user_reply: str, db_thread_id: int, file_context: s
 
     except Exception as exc:
         logger.exception("telegram webhook: direct thread supervisor run failed: %s", exc)
-        return f"Error during execution: {exc}"
+        # Wipe the broken tg_ checkpoint so the next message starts with clean state
+        try:
+            from app.agents.supervisor import get_graph
+            checkpointer = get_graph().checkpointer
+            if checkpointer is not None:
+                await checkpointer.adelete_thread(lg_thread_id)
+                logger.info("_run_direct_thread: cleared broken checkpoint for %s", lg_thread_id)
+        except Exception as ce:
+            logger.warning("_run_direct_thread: failed to clear checkpoint: %s", ce)
+        # Friendly message for the most common failure mode (recursion/retry loop)
+        exc_str = str(exc)
+        if "Recursion limit" in exc_str or "GraphRecursion" in type(exc).__name__:
+            return (
+                "I got stuck in a retry loop and had to stop. This usually "
+                "means a tool (often Playwright) kept failing. Try again in "
+                "a moment — if it keeps happening, go to /connectors and click "
+                "Refresh on the relevant connector."
+            )
+        return f"Something went wrong: {exc_str[:300]}"
 
 
 async def _run_continuation(user_reply: str, conversation_id: int) -> str:
@@ -582,12 +587,13 @@ async def _run_continuation(user_reply: str, conversation_id: int) -> str:
 
     graph = get_graph()
     lg_config = {
+        "recursion_limit": 100,
         "configurable": {
             "thread_id": lg_thread_id,       # same thread — LLM sees full history
             "ws_thread_id": db_thread_id or 0,
-            "model": "gpt-4o-mini",
+            "model": app_config.DEFAULT_THREAD_MODEL,
             "automation_run": True,
-        }
+        },
     }
 
     # Send just the user's reply — the LangGraph checkpointer carries all prior context
@@ -657,6 +663,9 @@ async def telegram_webhook(
 
     token = app_config.TELEGRAM_BOT_TOKEN
 
+    # Cancel any pending idle-close job — user is active
+    _cancel_idle_close(chat_id)
+
     # ── Voice message → Whisper transcription ─────────────────────────────
     # Voice notes are treated as spoken text prompts, not file uploads.
     if "voice" in message:
@@ -693,7 +702,7 @@ async def telegram_webhook(
                 async with httpx.AsyncClient(timeout=5) as client:
                     await client.post(
                         f"https://api.telegram.org/bot{token}/sendMessage",
-                        json={"chat_id": chat_id, "text": f"🎙 {transcript}"},
+                        json={"chat_id": chat_id, "text": transcript},
                     )
             except Exception:
                 pass
@@ -720,43 +729,10 @@ async def telegram_webhook(
 
         filename, file_path = result
 
-        # Determine intent: caption > stored pending intent > None (accumulate)
-        pending_file = await _get_and_clear_pending_file(chat_id)
-        if text:
-            if pending_file:
-                logger.info(
-                    "telegram file upload: caption overrides stored pending intent for chat_id=%s",
-                    chat_id,
-                )
-            intent = text
-        elif pending_file:
-            intent = pending_file["intent_text"]
-        else:
-            intent = None
-
-        if intent is None:
-            # No intent yet — accumulate this file and ask what to do with it.
-            # Any previously accumulated files stay queued too.
-            total = await _add_pending_file_item(chat_id, filename, file_path)
-            if token:
-                try:
-                    async with httpx.AsyncClient(timeout=5) as client:
-                        if total == 1:
-                            prompt_txt = f"Got {filename}. What should I do with it? (Send more files or tell me now)"
-                        else:
-                            prompt_txt = f"Got {filename} ({total} files queued). Send more or tell me what to do, or type 'done' to process with a generic action."
-                        await client.post(
-                            f"https://api.telegram.org/bot{token}/sendMessage",
-                            json={"chat_id": chat_id, "text": prompt_txt},
-                        )
-                except Exception:
-                    pass
-            return {"ok": True}
-
-        # We have an intent — also grab any previously accumulated files and process all together.
-        accumulated = await _get_and_clear_pending_file_items(chat_id)
-        # Add the current file to the batch
-        all_files = accumulated + [{"filename": filename, "file_path": file_path}]
+        # Intent: caption if present, otherwise a neutral prompt asking the agent
+        # to inspect the file. No more two-step pending-file flow.
+        intent = text if text else f"The user uploaded a file named {filename}. Look at it and ask them what they want done, or act on it if the content makes the intent obvious."
+        all_files = [{"filename": filename, "file_path": file_path}]
 
         if len(all_files) == 1:
             file_context = (
@@ -796,33 +772,30 @@ async def telegram_webhook(
                 )
                 await db.commit()
 
-        if not thread_id and pending_file:
-            thread_id = pending_file.get("thread_id")
-
         _new_file_thread = False
         if not thread_id:
             async with AsyncSessionLocal() as db:
                 thread_title = (intent or filename)[:60]
-                new_thread = Thread(title=thread_title, model="gpt-4o-mini")
+                new_thread = Thread(title=thread_title, model=app_config.DEFAULT_THREAD_MODEL)
                 db.add(new_thread)
                 await db.commit()
                 await db.refresh(new_thread)
                 thread_id = new_thread.id
             _new_file_thread = True
 
-        if _new_file_thread:
-            await _notify_thread_created(chat_id, thread_id, token)
         if token:
             try:
+                ack = f"Got it, working on it... [Thread #{thread_id}]" if _new_file_thread else "Got it, working on it..."
                 async with httpx.AsyncClient(timeout=5) as client:
                     await client.post(
                         f"https://api.telegram.org/bot{token}/sendMessage",
-                        json={"chat_id": chat_id, "text": "Got it, working on it..."},
+                        json={"chat_id": chat_id, "text": ack},
                     )
             except Exception:
                 pass
 
         async def _run_file_task(tid: int, p: str, fc: str) -> None:
+            _cancel_idle_close(chat_id)
             result_text = await _run_direct_thread(p, tid, file_context=fc)
             new_pending = await _has_pending_reply(chat_id)
             if not new_pending and token:
@@ -855,7 +828,7 @@ async def telegram_webhook(
     if _text_norm.lower().startswith("/newthread"):
         title = _text_norm[len("/newthread"):].strip() or "New Chat"
         async with AsyncSessionLocal() as db:
-            thread = Thread(title=title, model="gpt-4o-mini")
+            thread = Thread(title=title, model=app_config.DEFAULT_THREAD_MODEL)
             db.add(thread)
             await db.commit()
             await db.refresh(thread)
@@ -863,7 +836,6 @@ async def telegram_webhook(
 
         # Clear any existing pending reply and point to the new thread
         await _register_pending_reply(chat_id, new_thread_id, conversation_id=None)
-        await _notify_thread_created(chat_id, new_thread_id, token)
 
         if token:
             try:
@@ -872,7 +844,7 @@ async def telegram_webhook(
                         f"https://api.telegram.org/bot{token}/sendMessage",
                         json={
                             "chat_id": chat_id,
-                            "text": "Hey! How can I help you?",
+                            "text": f"[Thread #{new_thread_id}] Hey! How can I help you?",
                         },
                     )
             except Exception:
@@ -974,13 +946,16 @@ async def telegram_webhook(
             "Commands:\n"
             "/newthread [title] — start a new thread\n"
             "/thread — show active thread\n"
+            "/threads — list last 5 threads\n"
             "/switch <id> — switch to a parked thread\n"
             "/model [name] — view or change AI model\n"
             "/remember <fact> — save something to memory\n"
             "/ls [folder] — list workspace files\n"
             "/remind <when> <what> — set a one-off reminder\n"
             "  e.g. /remind at 5pm review the report\n"
-            "  e.g. /remind in 30 minutes check email\n\n"
+            "  e.g. /remind in 30 minutes check email\n"
+            "/automation <description> — create an automation\n"
+            "  e.g. /automation send me weather every morning at 8am\n\n"
             "Send a file anytime — I'll ask what to do with it.\n"
             "Send multiple files then type 'done' to process them all together.\n"
             "Send a voice note — it'll be transcribed and treated as a message."
@@ -1094,6 +1069,44 @@ async def telegram_webhook(
                 pass
         return {"ok": True}
 
+    # ── /threads — list last 5 threads ───────────────────────────────────────
+    if _text_norm.lower() in ("/threads", "/threads "):
+        async with AsyncSessionLocal() as db:
+            _tlist_result = await db.execute(
+                select(Thread).order_by(Thread.created_at.desc()).limit(5)
+            )
+            _recent_threads = _tlist_result.scalars().all()
+
+        if not _recent_threads:
+            reply = "No threads yet. Send /newthread to create one."
+        else:
+            lines = []
+            now_check_t = datetime.now(timezone.utc)
+            async with AsyncSessionLocal() as db:
+                _active_tpr_r = await db.execute(
+                    select(TelegramPendingReply)
+                    .where(TelegramPendingReply.chat_id == chat_id)
+                    .where(TelegramPendingReply.expires_at > now_check_t)
+                )
+                _active_tpr = _active_tpr_r.scalars().first()
+            active_tid = _active_tpr.thread_id if _active_tpr else None
+
+            for t in _recent_threads:
+                marker = " ◀ active" if t.id == active_tid else ""
+                lines.append(f"#{t.id} — {t.title[:40]}{marker}")
+            reply = "Last 5 threads:\n" + "\n".join(lines) + "\n\nUse /switch <id> to resume one."
+
+        if token:
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": reply},
+                    )
+            except Exception:
+                pass
+        return {"ok": True}
+
     # ── /switch <thread_id> — resume a parked automation thread ──────────────
     if _text_norm.lower().startswith("/switch"):
         _switch_arg = _text_norm[len("/switch"):].strip()
@@ -1126,6 +1139,68 @@ async def telegram_webhook(
                     f"Switched to Thread #{_switch_tid}: \"{_switch_thread.title}\"\n\n"
                     f"Last message:\n{_smart_truncate(last_text, limit=800)}"
                 )
+
+        if token:
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": reply},
+                    )
+            except Exception:
+                pass
+        return {"ok": True}
+
+    # ── /automation <description> — create an automation from Telegram ───────
+    if _text_norm.lower().startswith("/automation"):
+        description = _text_norm[len("/automation"):].strip()
+        if not description:
+            reply = "Usage: /automation <description>\nExample: /automation send me weather every morning at 8am"
+        else:
+            try:
+                from app.automations.parser import parse_automation
+                from app.automations.runtime import register_new_automation
+                from app.db.models import Automation
+                import json as _json
+
+                async with AsyncSessionLocal() as db:
+                    parsed = await parse_automation(description, db=db)
+                    automation = Automation(
+                        name=parsed["name"],
+                        trigger_type=parsed["trigger_type"],
+                        trigger_config_json=_json.dumps(parsed["trigger_config"]),
+                        action_prompt=parsed["action_prompt"],
+                        model=app_config.DEFAULT_THREAD_MODEL,
+                        enabled=True,
+                    )
+                    db.add(automation)
+                    await db.commit()
+                    await db.refresh(automation)
+
+                await register_new_automation(automation)
+
+                trigger_display = parsed["trigger_type"]
+                if parsed["trigger_type"] == "cron":
+                    trigger_display = f"cron: {parsed['trigger_config'].get('cron', '')}"
+                elif parsed["trigger_type"] == "gmail_new_from_sender":
+                    trigger_display = f"gmail from {parsed['trigger_config'].get('sender', '')}"
+                elif parsed["trigger_type"] == "gmail_any_new":
+                    trigger_display = "any new gmail"
+                elif parsed["trigger_type"] == "gmail_keyword_match":
+                    trigger_display = f"gmail keyword: {parsed['trigger_config'].get('keywords', '')}"
+                elif parsed["trigger_type"] == "fs_new_in_folder":
+                    trigger_display = f"new file in {parsed['trigger_config'].get('folder', '')}"
+
+                reply = (
+                    f"Automation created: {parsed['name']}\n"
+                    f"Trigger: {trigger_display}\n"
+                    f"ID: #{automation.id}"
+                )
+            except ValueError as exc:
+                reply = f"Could not parse automation: {exc}"
+            except Exception as exc:
+                logger.exception("telegram /automation: failed: %s", exc)
+                reply = "Something went wrong creating the automation. Please try again."
 
         if token:
             try:
@@ -1188,7 +1263,7 @@ async def telegram_webhook(
             async with AsyncSessionLocal() as db:
                 _cmd_thread = Thread(
                     title=f"/{_custom_cmd.name}: {_cmd_prompt[:50]}",
-                    model="gpt-4o-mini",
+                    model=_custom_cmd.model,
                 )
                 db.add(_cmd_thread)
                 await db.commit()
@@ -1200,12 +1275,13 @@ async def telegram_webhook(
                     async with httpx.AsyncClient(timeout=5) as client:
                         await client.post(
                             f"https://api.telegram.org/bot{token}/sendMessage",
-                            json={"chat_id": chat_id, "text": "Got it, working on it..."},
+                            json={"chat_id": chat_id, "text": f"Got it, working on it... [Thread #{_cmd_thread_id}]"},
                         )
                 except Exception:
                     pass
 
             async def _run_custom_cmd(tid: int, prompt: str) -> None:
+                _cancel_idle_close(chat_id)
                 result_text = await _run_direct_thread(prompt, tid)
                 new_pending = await _has_pending_reply(chat_id)
                 if not new_pending and token:
@@ -1262,26 +1338,26 @@ async def telegram_webhook(
             _new_cmd_thread = False
             if not _cmd_thread_id:
                 async with AsyncSessionLocal() as db:
-                    _ct = Thread(title=f"/{_cmd_name}", model="gpt-4o-mini")
+                    _ct = Thread(title=f"/{_cmd_name}", model=_custom_cmd.model)
                     db.add(_ct)
                     await db.commit()
                     await db.refresh(_ct)
                     _cmd_thread_id = _ct.id
                 _new_cmd_thread = True
-            if _new_cmd_thread:
-                await _notify_thread_created(chat_id, _cmd_thread_id, token)
 
             if token:
                 try:
+                    ack = f"Got it, working on it... [Thread #{_cmd_thread_id}]" if _new_cmd_thread else "Got it, working on it..."
                     async with httpx.AsyncClient(timeout=5) as client:
                         await client.post(
                             f"https://api.telegram.org/bot{token}/sendMessage",
-                            json={"chat_id": chat_id, "text": "Got it, working on it..."},
+                            json={"chat_id": chat_id, "text": ack},
                         )
                 except Exception:
                     pass
 
             async def _run_custom_cmd(tid: int, prompt: str) -> None:
+                _cancel_idle_close(chat_id)
                 result_text = await _run_direct_thread(prompt, tid)
                 new_pending = await _has_pending_reply(chat_id)
                 if not new_pending and token:
@@ -1297,7 +1373,7 @@ async def telegram_webhook(
                             )
                     except Exception as exc:
                         logger.warning("telegram custom cmd: failed to send result: %s", exc)
-                    await _register_or_notify_clash(chat_id, tid, token, result_text, conversation_id=None)
+                await _register_or_notify_clash(chat_id, tid, token, result_text, conversation_id=None)
 
             asyncio.create_task(_run_custom_cmd(_cmd_thread_id, _full_prompt))
             return {"ok": True}
@@ -1316,139 +1392,44 @@ async def telegram_webhook(
         pending = result.scalars().first()
 
         if pending is None:
-            # ── Multi-file "done" or intent for accumulated files ─────────────────
-            # If the user has queued files and now sends text, treat it as the intent.
-            # "done" (or similar) triggers processing with a generic instruction.
-            _accumulated = await _get_and_clear_pending_file_items(chat_id)
-            if _accumulated:
-                _done_words = {"done", "process", "go", "ok", "okay", "proceed", "yes"}
-                _lower_text = text.lower().strip().rstrip("!.?")
-                _is_done_signal = _lower_text in _done_words
-                _batch_intent = (
-                    "Process these files — copy or organise them as appropriate."
-                    if _is_done_signal
-                    else text
-                )
-                _file_list = "\n".join(
-                    f"  - workspace/telegram_uploads/{f['filename']}" for f in _accumulated
-                )
-                _batch_file_context = (
-                    f"[File context] The user sent {len(_accumulated)} file(s) via Telegram:\n{_file_list}\n"
-                    f"Use filesystem tools (copy_file, move_file, list_dir, etc.) to act on them. "
-                    f"Do NOT upload to Google Drive or read binary content unless explicitly asked."
-                )
-                # Resolve thread
-                _batch_thread_id: int | None = None
-                _now_batch = datetime.now(timezone.utc)
-                async with AsyncSessionLocal() as db:
-                    _tpr_r = await db.execute(
-                        select(TelegramPendingReply)
-                        .where(TelegramPendingReply.chat_id == chat_id)
-                        .where(TelegramPendingReply.expires_at > _now_batch)
-                    )
-                    _active_tpr = _tpr_r.scalars().first()
-                    if _active_tpr:
-                        _batch_thread_id = _active_tpr.thread_id
-                        await db.execute(
-                            delete(TelegramPendingReply).where(TelegramPendingReply.chat_id == chat_id)
+            # Plain new message — no active thread, no file. Create a new thread.
+            async with AsyncSessionLocal() as db:
+                new_thread = Thread(title=text[:60], model=app_config.DEFAULT_THREAD_MODEL)
+                db.add(new_thread)
+                await db.commit()
+                await db.refresh(new_thread)
+                new_msg_thread_id = new_thread.id
+
+            if token:
+                try:
+                    async with httpx.AsyncClient(timeout=5) as client:
+                        await client.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={"chat_id": chat_id, "text": f"Got it, working on it... [Thread #{new_msg_thread_id}]"},
                         )
-                        await db.commit()
-                if not _batch_thread_id:
-                    async with AsyncSessionLocal() as db:
-                        _bt = Thread(title=_batch_intent[:60], model="gpt-4o-mini")
-                        db.add(_bt)
-                        await db.commit()
-                        await db.refresh(_bt)
-                        _batch_thread_id = _bt.id
-                if token:
+                except Exception:
+                    pass
+
+            async def _run_new_thread(tid: int) -> None:
+                _cancel_idle_close(chat_id)
+                result_text = await _run_direct_thread(text, tid)
+                new_pending = await _has_pending_reply(chat_id)
+                if not new_pending and token:
                     try:
-                        async with httpx.AsyncClient(timeout=5) as client:
+                        async with httpx.AsyncClient(timeout=10) as client:
                             await client.post(
                                 f"https://api.telegram.org/bot{token}/sendMessage",
-                                json={"chat_id": chat_id, "text": "Got it, working on it..."},
+                                json={"chat_id": chat_id, "text": _smart_truncate(result_text)},
                             )
-                    except Exception:
-                        pass
-
-                async def _run_batch(tid: int, intent_p: str, fc: str) -> None:
-                    result_text = await _run_direct_thread(intent_p, tid, file_context=fc)
-                    new_pending = await _has_pending_reply(chat_id)
-                    if not new_pending and token:
-                        try:
-                            async with httpx.AsyncClient(timeout=10) as client:
-                                await client.post(
-                                    f"https://api.telegram.org/bot{token}/sendMessage",
-                                    json={"chat_id": chat_id, "text": _smart_truncate(result_text)},
-                                )
-                                await client.post(
-                                    f"https://api.telegram.org/bot{token}/sendMessage",
-                                    json={"chat_id": chat_id, "text": "..."},
-                                )
-                        except Exception as exc:
-                            logger.warning("telegram batch task: failed to send result: %s", exc)
-                    await _register_or_notify_clash(chat_id, tid, token, result_text, conversation_id=None)
-
-                asyncio.create_task(_run_batch(_batch_thread_id, _batch_intent, _batch_file_context))
-                return {"ok": True}
-
-            # No automation pending — check if user is hinting a file is coming
-            pending_file_row = await _get_and_clear_pending_file(chat_id)
-            if _text_hints_file(text):
-                active_thread_id = pending_file_row.get("thread_id") if pending_file_row else None
-                await _store_pending_file(chat_id, text, thread_id=active_thread_id)
-                if token:
-                    try:
-                        async with httpx.AsyncClient(timeout=5) as client:
                             await client.post(
                                 f"https://api.telegram.org/bot{token}/sendMessage",
-                                json={"chat_id": chat_id, "text": "Got it, send the file when ready."},
+                                json={"chat_id": chat_id, "text": "..."},
                             )
-                    except Exception:
-                        pass
-                return {"ok": True}
-            elif pending_file_row:
-                # User redirected away from file intent — run agent with new text
-                redirect_thread_id = pending_file_row.get("thread_id")
-                _new_redirect_thread = False
-                if not redirect_thread_id:
-                    async with AsyncSessionLocal() as db:
-                        new_thread = Thread(title=text[:60], model="gpt-4o-mini")
-                        db.add(new_thread)
-                        await db.commit()
-                        await db.refresh(new_thread)
-                        redirect_thread_id = new_thread.id
-                    _new_redirect_thread = True
-                if _new_redirect_thread:
-                    await _notify_thread_created(chat_id, redirect_thread_id, token)
-                if token:
-                    try:
-                        async with httpx.AsyncClient(timeout=5) as client:
-                            await client.post(
-                                f"https://api.telegram.org/bot{token}/sendMessage",
-                                json={"chat_id": chat_id, "text": "Got it. Working on it..."},
-                            )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning("telegram webhook: new thread task failed: %s", exc)
+                await _register_or_notify_clash(chat_id, tid, token, result_text, conversation_id=None)
 
-                async def _run_redirect(tid: int, msg_text: str) -> None:
-                    result_text = await _run_direct_thread(msg_text, tid)
-                    new_pending = await _has_pending_reply(chat_id)
-                    if not new_pending and token:
-                        try:
-                            async with httpx.AsyncClient(timeout=10) as client:
-                                await client.post(
-                                    f"https://api.telegram.org/bot{token}/sendMessage",
-                                    json={"chat_id": chat_id, "text": _smart_truncate(result_text)},
-                                )
-                                await client.post(
-                                    f"https://api.telegram.org/bot{token}/sendMessage",
-                                    json={"chat_id": chat_id, "text": "..."},
-                                )
-                        except Exception as exc:
-                            logger.warning("telegram webhook: redirect task failed to send result: %s", exc)
-                        await _register_or_notify_clash(chat_id, tid, token, result_text, conversation_id=None)
-
-                asyncio.create_task(_run_redirect(redirect_thread_id, text))
+            asyncio.create_task(_run_new_thread(new_msg_thread_id))
             return {"ok": True}
 
         conversation_id = pending.conversation_id
@@ -1490,6 +1471,7 @@ async def telegram_webhook(
                 pass
 
         async def _run_direct(db_tid: int) -> None:
+            _cancel_idle_close(chat_id)
             result_text = await _run_direct_thread(text, db_tid)
             # If the supervisor itself called telegram_ask, it already registered
             # a pending reply — don't double-register.
@@ -1524,6 +1506,7 @@ async def telegram_webhook(
             pass
 
     async def _run_and_notify(conv_id: int) -> None:
+        _cancel_idle_close(chat_id)
         result = await _run_continuation(text, conv_id)
         # If the supervisor itself called telegram_ask, pending is already registered.
         new_pending = await _has_pending_reply(chat_id)

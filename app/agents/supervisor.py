@@ -65,6 +65,7 @@ from app.tools.shell import run_shell_command
 from app.tools.web import web_fetch, web_search
 from app.tools.telegram_tools import save_draft, schedule_message, telegram_ask, telegram_send, telegram_send_file
 from app.tools.whatsapp_tools import (
+    whatsapp_fetch_messages,
     whatsapp_get_groups,
     whatsapp_read_messages,
     whatsapp_send,
@@ -156,6 +157,7 @@ WORKER_TOOLS = [
     whatsapp_send,
     whatsapp_send_file,
     whatsapp_read_messages,
+    whatsapp_fetch_messages,
     whatsapp_get_groups,
     read_skill,
     rag_ingest,
@@ -292,7 +294,7 @@ Gmail      : gmail_list_unread, gmail_read, gmail_search, gmail_send
 Drive      : drive_list, drive_read, drive_write, drive_download, drive_upload
 Calendar   : calendar_list_events, calendar_create_event
 Telegram   : telegram_send, telegram_ask, save_draft, schedule_message, telegram_send_file
-WhatsApp   : whatsapp_get_groups (list groups+chat_ids), whatsapp_send (text), whatsapp_send_file (local file), whatsapp_read_messages (fetch history)
+WhatsApp   : whatsapp_get_groups (list groups+chat_ids), whatsapp_send (text), whatsapp_send_file (local file), whatsapp_read_messages (live API history), whatsapp_fetch_messages (DB query by time window — use for summaries, reports, "today's messages", automations)
 Images     : generate_image  (DALL-E 3, saves to workspace/images/, $0.04/image)
 Skills     : read_skill  (call when a skill from the SKILLS section is relevant)
 RAG        : rag_ingest, rag_search  (vector search over local files)
@@ -1174,6 +1176,7 @@ SUPERVISOR_TOOLS = [
     whatsapp_send,
     whatsapp_send_file,
     whatsapp_read_messages,
+    whatsapp_fetch_messages,
     whatsapp_get_groups,
     generate_image,
     read_skill,

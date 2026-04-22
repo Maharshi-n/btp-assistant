@@ -30,7 +30,7 @@ templates = Jinja2Templates(directory=BASE_DIR / "web" / "templates")
 
 # Built-in command names that cannot be overridden
 _RESERVED_NAMES = {
-    "newthread", "thread", "model", "help", "remember", "memory", "ls", "remind",
+    "newthread", "thread", "threads", "switch", "model", "help", "remember", "memory", "ls", "remind", "automation",
 }
 
 _NAME_RE = re.compile(r"^[a-z0-9_]+$")
@@ -68,9 +68,10 @@ async def telegram_commands_page(
         select(TelegramCommand).order_by(TelegramCommand.created_at.desc())
     )
     commands = result.scalars().all()
+    from app.web.routes.chat import AVAILABLE_MODELS
     return templates.TemplateResponse(
         "telegram_commands.html",
-        {"request": request, "commands": commands},
+        {"request": request, "commands": commands, "available_models": list(AVAILABLE_MODELS)},
     )
 
 
@@ -83,6 +84,7 @@ async def create_telegram_command(
     name: str = Form(...),
     description: str = Form(...),
     preset_prompt: str = Form(""),
+    model: str = Form("gpt-4o-mini"),
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require_user),
 ):
@@ -101,6 +103,7 @@ async def create_telegram_command(
         name=name,
         description=description.strip(),
         preset_prompt=preset_prompt.strip() or None,
+        model=model.strip() or "gpt-4o-mini",
         enabled=True,
     )
     db.add(cmd)

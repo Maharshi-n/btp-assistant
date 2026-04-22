@@ -190,6 +190,10 @@ def policy_whatsapp_read_messages(args: dict) -> Decision:
     return "auto"
 
 
+def policy_whatsapp_fetch_messages(args: dict) -> Decision:
+    return "auto"
+
+
 def policy_whatsapp_get_groups(args: dict) -> Decision:
     return "auto"
 
@@ -237,6 +241,7 @@ _POLICY_TABLE: dict[str, object] = {
     "whatsapp_send": policy_whatsapp_send,
     "whatsapp_send_file": policy_whatsapp_send_file,
     "whatsapp_read_messages": policy_whatsapp_read_messages,
+    "whatsapp_fetch_messages": policy_whatsapp_fetch_messages,
     "whatsapp_get_groups": policy_whatsapp_get_groups,
     # Skills — read-only, always auto
     "read_skill": lambda args: "auto",

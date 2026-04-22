@@ -1,0 +1,307 @@
+{% extends "base.html" %}
+
+{% block title %}Automations — RAION{% endblock %}
+
+{% block content %}
+<div class="min-h-screen bg-gray-50">
+
+  <!-- Top bar -->
+  <header class="bg-white border-b shadow-sm px-6 py-4 flex items-center gap-4">
+    <a href="/" class="text-gray-500 hover:text-gray-800 transition-colors">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+      </svg>
+    </a>
+    <h1 class="text-base font-semibold text-gray-800">Automations</h1>
+    <span class="ml-auto text-xs text-gray-400">{{ automation_data|length }} automation{{ 's' if automation_data|length != 1 else '' }}</span>
+  </header>
+
+  <main class="max-w-3xl mx-auto px-4 py-8 space-y-6">
+
+    <!-- Flash banners -->
+    <div id="flash-banner" class="hidden"></div>
+
+    <!-- Create new automation card -->
+    <section class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="px-6 py-4 border-b bg-gray-50 flex items-center gap-2">
+        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 4v16m8-8H4"/>
+        </svg>
+        <h2 class="text-sm font-semibold text-gray-700">New Automation</h2>
+      </div>
+      <div class="px-6 py-5">
+        <div class="flex gap-3">
+          <textarea id="nl-input" rows="3"
+                    placeholder="Describe your automation..."
+                    class="w-4/5 rounded-xl border border-gray-300 px-3 py-2 text-sm resize-none
+                           focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+          <div class="flex flex-col gap-2 justify-end w-1/5">
+            <select id="model-select"
+                    class="w-full rounded-xl border border-gray-300 px-2 py-2 text-sm
+                           focus:outline-none focus:ring-2 focus:ring-blue-500">
+              {% for m in available_models %}
+              <option value="{{ m }}" {% if m == 'gpt-4o-mini' %}selected{% endif %}>{{ m }}</option>
+              {% endfor %}
+            </select>
+            <button id="create-btn" onclick="createAutomation()"
+                    class="w-full px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-medium
+                           hover:bg-blue-700 transition-colors">
+              Create
+            </button>
+          </div>
+        </div>
+        <p id="create-error" class="hidden mt-2 text-xs text-red-600"></p>
+        <p id="create-loading" class="hidden mt-2 text-xs text-gray-500">Parsing with AI…</p>
+      </div>
+    </section>
+
+    <!-- Automations list -->
+    <div id="automations-list" class="space-y-3">
+      {% if not automation_data %}
+      <div id="empty-state" class="text-center py-12 text-gray-400 text-sm">
+        No automations yet. Create one above.
+      </div>
+      {% endif %}
+
+      {% for item in automation_data %}
+      {% set a = item.automation %}
+      {% set tc = item.trigger_config %}
+      {% set last_run = item.last_run %}
+      <div id="automation-{{ a.id }}"
+           class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+
+        <div class="px-5 py-4 flex items-start gap-3">
+
+          <!-- Status indicator -->
+          <div class="mt-0.5">
+            {% if a.enabled %}
+            <span class="inline-block w-2.5 h-2.5 rounded-full bg-green-400 mt-1"></span>
+            {% else %}
+            <span class="inline-block w-2.5 h-2.5 rounded-full bg-gray-300 mt-1"></span>
+            {% endif %}
+          </div>
+
+          <!-- Main content -->
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-medium text-sm text-gray-800">{{ a.name }}</span>
+              <!-- Trigger type badge -->
+              {% if a.trigger_type == 'cron' %}
+              <span class="px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 text-xs font-medium border border-purple-200">
+                cron: {{ tc.get('cron', '') }}
+              </span>
+              {% elif a.trigger_type == 'gmail_new_from_sender' %}
+              <span class="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 text-xs font-medium border border-blue-200">
+                gmail from {{ tc.get('sender', '') }}
+              </span>
+              {% elif a.trigger_type == 'gmail_keyword_match' %}
+              <span class="px-2 py-0.5 rounded-full bg-green-50 text-green-700 text-xs font-medium border border-green-200">
+                gmail: {{ tc.get('keywords', '')|truncate(40) }}
+              </span>
+              {% elif a.trigger_type == 'fs_new_in_folder' %}
+              <span class="px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 text-xs font-medium border border-amber-200">
+                new file in {{ tc.get('folder', '')|truncate(40) }}
+              </span>
+              {% endif %}
+            </div>
+
+            <p class="mt-1 text-xs text-gray-500 line-clamp-2">{{ a.action_prompt }}</p>
+
+            <!-- Model selector -->
+            <div class="mt-2 flex items-center gap-2">
+              <span class="text-xs text-gray-400">Model:</span>
+              <select onchange="updateModel({{ a.id }}, this.value)"
+                      class="text-xs rounded-lg border border-gray-200 px-2 py-1
+                             focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-600">
+                {% for m in available_models %}
+                <option value="{{ m }}" {% if m == a.model %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+              </select>
+              <span id="model-saved-{{ a.id }}" class="hidden text-xs text-green-600">Saved</span>
+            </div>
+
+            <!-- Last run status -->
+            <div class="mt-2 flex items-center gap-3 text-xs text-gray-400">
+              {% if last_run %}
+              <span>Last run:
+                {% if last_run.status == 'done' %}
+                <span class="text-green-600">done</span>
+                {% elif last_run.status == 'failed' %}
+                <span class="text-red-500">failed</span>
+                {% else %}
+                <span class="text-yellow-500">running</span>
+                {% endif %}
+                <a href="/?thread={{ last_run.thread_id }}" class="underline text-blue-500 ml-1">view thread</a>
+              </span>
+              {% else %}
+              <span>Never run</span>
+              {% endif %}
+              <!-- Runs history toggle -->
+              <button onclick="toggleRuns({{ a.id }})"
+                      class="underline text-blue-400 hover:text-blue-600">
+                view runs
+              </button>
+            </div>
+
+            <!-- Collapsible runs list -->
+            <div id="runs-{{ a.id }}" class="hidden mt-3 space-y-1.5">
+              <p class="text-xs text-gray-400 italic">Loading…</p>
+            </div>
+          </div>
+
+          <!-- Action buttons -->
+          <div class="flex items-center gap-2 shrink-0">
+            {% if a.enabled %}
+            <button onclick="toggleAutomation({{ a.id }}, false)"
+                    class="px-3 py-1.5 text-xs rounded-lg border border-gray-300 text-gray-600
+                           hover:bg-gray-50 transition-colors font-medium">
+              Disable
+            </button>
+            {% else %}
+            <button onclick="toggleAutomation({{ a.id }}, true)"
+                    class="px-3 py-1.5 text-xs rounded-lg border border-green-300 text-green-700
+                           hover:bg-green-50 transition-colors font-medium">
+              Enable
+            </button>
+            {% endif %}
+            <button onclick="deleteAutomation({{ a.id }})"
+                    class="px-3 py-1.5 text-xs rounded-lg border border-red-300 text-red-600
+                           hover:bg-red-50 transition-colors font-medium">
+              Delete
+            </button>
+          </div>
+
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+  </main>
+
+</div>
+
+<script>
+async function updateModel(id, model) {
+  const savedEl = document.getElementById(`model-saved-${id}`);
+  await fetch(`/api/automations/${id}`, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model}),
+  });
+  savedEl.classList.remove('hidden');
+  setTimeout(() => savedEl.classList.add('hidden'), 1500);
+}
+
+async function createAutomation() {
+  const input = document.getElementById('nl-input');
+  const btn = document.getElementById('create-btn');
+  const errEl = document.getElementById('create-error');
+  const loadEl = document.getElementById('create-loading');
+
+  const nl = input.value.trim();
+  if (!nl) return;
+
+  btn.disabled = true;
+  errEl.classList.add('hidden');
+  loadEl.classList.remove('hidden');
+
+  try {
+    const res = await fetch('/api/automations', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({nl_description: nl, model: document.getElementById('model-select').value}),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errEl.textContent = data.detail || 'Failed to create automation.';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    // Reload page to show new automation
+    window.location.reload();
+  } catch (e) {
+    errEl.textContent = 'Network error. Please try again.';
+    errEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    loadEl.classList.add('hidden');
+  }
+}
+
+async function toggleAutomation(id, enable) {
+  const action = enable ? 'enable' : 'disable';
+  try {
+    const res = await fetch(`/api/automations/${id}/${action}`, {method: 'POST'});
+    if (res.ok) window.location.reload();
+    else {
+      const d = await res.json();
+      alert(d.detail || 'Failed to update automation.');
+    }
+  } catch(e) {
+    alert('Network error.');
+  }
+}
+
+async function deleteAutomation(id) {
+  if (!confirm('Delete this automation? This cannot be undone.')) return;
+  try {
+    const res = await fetch(`/api/automations/${id}`, {method: 'DELETE'});
+    if (res.ok) {
+      const el = document.getElementById(`automation-${id}`);
+      if (el) el.remove();
+    } else {
+      const d = await res.json();
+      alert(d.detail || 'Failed to delete automation.');
+    }
+  } catch(e) {
+    alert('Network error.');
+  }
+}
+
+async function toggleRuns(id) {
+  const panel = document.getElementById(`runs-${id}`);
+  if (!panel) return;
+
+  if (!panel.classList.contains('hidden')) {
+    panel.classList.add('hidden');
+    return;
+  }
+
+  panel.classList.remove('hidden');
+  panel.innerHTML = '<p class="text-xs text-gray-400 italic">Loading…</p>';
+
+  try {
+    const res = await fetch(`/api/automations/${id}/runs`);
+    const runs = await res.json();
+    if (!runs.length) {
+      panel.innerHTML = '<p class="text-xs text-gray-400 italic">No runs yet.</p>';
+      return;
+    }
+    panel.innerHTML = runs.map(r => {
+      const started = new Date(r.started_at).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'});
+      const statusColor = r.status === 'done' ? 'text-green-600' :
+                          r.status === 'failed' ? 'text-red-500' : 'text-yellow-500';
+      const threadLink = r.thread_id
+        ? `<a href="/?thread=${r.thread_id}" class="underline text-blue-500 ml-2">view thread</a>` : '';
+      return `<div class="flex items-center gap-2 text-xs text-gray-500 py-1 border-t border-gray-100">
+        <span class="${statusColor} font-medium">${r.status}</span>
+        <span>${started}</span>
+        ${threadLink}
+      </div>`;
+    }).join('');
+  } catch(e) {
+    panel.innerHTML = '<p class="text-xs text-red-500">Error loading runs.</p>';
+  }
+}
+
+// Allow Ctrl+Enter to submit
+document.getElementById('nl-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    createAutomation();
+  }
+});
+
+</script>
+{% endblock %}

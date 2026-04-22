@@ -46,6 +46,9 @@ _fs_handlers: dict[int, tuple[Any, str]] = {}  # id → (handler, watch_path)
 # Per-automation lock — prevents concurrent poll coroutines from double-firing
 _gmail_poll_locks: dict[int, asyncio.Lock] = {}
 
+# WhatsApp polling background task handle
+_wa_poll_task: asyncio.Task | None = None
+
 
 # ---------------------------------------------------------------------------
 # Trigger-fire helper
@@ -149,12 +152,17 @@ async def _fire_automation(automation_id: int, trigger_context: dict | None = No
                     + f"\nTriggered by new file: {trigger_context['file_path']}"
                 )
             elif trigger_context.get("whatsapp"):
+                trusted = trigger_context.get("trusted_block", "")
+                # Append thread_id so action_prompt can reference it in Telegram notifications
+                trusted += f"\nthread_id: {thread.id}"
                 effective_prompt = (
                     "[AUTOMATION RUN — execute immediately, no questions. "
                     "You MUST call tools as instructed. Do NOT just reply with text — "
-                    "if the action says call telegram_send or whatsapp_send, you MUST call it as a tool.]\n\n"
+                    "if the action says call telegram_send or whatsapp_send, you MUST call it as a tool. "
+                    "When sending a Telegram notification, ALWAYS include the thread_id from TRUSTED TRIGGER CONTEXT "
+                    "at the end of the message so the user can open it: e.g. 'Thread: #<thread_id>']\n\n"
                     + automation.action_prompt
-                    + trigger_context.get("trusted_block", "")
+                    + trusted
                 )
 
         # Save the action prompt as the first user message
@@ -682,9 +690,189 @@ def unregister_automation(automation_id: int) -> None:
 # Startup / shutdown
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# WhatsApp message polling (fallback for unreliable webhooks)
+# ---------------------------------------------------------------------------
+
+# Per-group set of already-seen message_ids to prevent overlap.
+# Populated on first poll from DB so restarts don't re-fire old messages.
+_wa_seen_ids: dict[str, set[str]] = {}  # chat_id → set of message_id strings
+_wa_seen_lock = asyncio.Lock()
+
+WHATSAPP_POLL_INTERVAL = 30  # seconds between polls per group
+WHATSAPP_POLL_FETCH_COUNT = 100  # messages to fetch per poll — covers bursts well above normal group activity
+
+
+async def _wa_poll_group(chat_id: str, group_name: str) -> None:
+    """Fetch recent messages for one group via Green API and store any new ones.
+
+    Uses the in-memory _wa_seen_ids set (seeded from DB on startup) to skip
+    messages already stored, so there is never any overlap regardless of how
+    many times this runs.
+    """
+    from app.integrations.green_api import get_green_client, GreenAPIError
+    from app.db.models import WhatsAppMessage as _WAMsg
+
+    client = get_green_client()
+    if client is None:
+        return
+
+    try:
+        raw_messages = await client.get_chat_history(chat_id, count=WHATSAPP_POLL_FETCH_COUNT)
+    except GreenAPIError as exc:
+        logger.debug("WA poll: getChatHistory failed for %s: %s", group_name, exc)
+        return
+    except Exception as exc:
+        logger.debug("WA poll: unexpected error for %s: %s", group_name, exc)
+        return
+
+    if not raw_messages:
+        return
+
+    async with _wa_seen_lock:
+        seen = _wa_seen_ids.setdefault(chat_id, set())
+
+        new_messages = []
+        for m in raw_messages:
+            msg_id: str = m.get("idMessage", "")
+            if not msg_id or msg_id in seen:
+                continue
+
+            direction = m.get("type", "incoming")  # "incoming" | "outgoing"
+            sender_name: str = m.get("senderName", "") or ""
+            sender_id: str = m.get("senderId", "") or ""
+
+            # Parse text from typeMessage field
+            type_msg = m.get("typeMessage", "")
+            if type_msg == "textMessage":
+                text = m.get("textMessage", "") or ""
+            elif type_msg == "extendedTextMessage":
+                text = (m.get("extendedTextMessage", {}) or {}).get("text", "") or m.get("textMessage", "") or ""
+            elif type_msg in ("imageMessage", "videoMessage", "documentMessage"):
+                text = (m.get(type_msg, {}) or {}).get("caption", "") or f"[{type_msg.replace('Message', '')}]"
+            elif type_msg == "audioMessage":
+                text = "[audio]"
+            elif type_msg == "stickerMessage":
+                text = "[sticker]"
+            else:
+                text = f"[{type_msg}]" if type_msg else ""
+
+            new_messages.append({
+                "msg_id": msg_id,
+                "direction": direction,
+                "sender_id": sender_id,
+                "sender_name": sender_name or None,
+                "text": text or None,
+                "type_msg": type_msg or "text",
+            })
+
+        if not new_messages:
+            return
+
+        # Persist new messages and mark seen
+        async with AsyncSessionLocal() as db:
+            # Double-check against DB to guard against seen-set loss on restart
+            from sqlalchemy import select as _select
+            existing = await db.execute(
+                _select(_WAMsg.message_id).where(
+                    _WAMsg.message_id.in_([m["msg_id"] for m in new_messages])
+                )
+            )
+            already_in_db = {row[0] for row in existing.fetchall()}
+
+            truly_new = [m for m in new_messages if m["msg_id"] not in already_in_db]
+            if not truly_new:
+                for m in new_messages:
+                    seen.add(m["msg_id"])
+                return
+
+            for m in truly_new:
+                db.add(_WAMsg(
+                    message_id=m["msg_id"],
+                    chat_id=chat_id,
+                    sender_id=m["sender_id"],
+                    sender_name=m["sender_name"],
+                    direction=m["direction"],
+                    message_type=m["type_msg"],
+                    text=m["text"],
+                ))
+                seen.add(m["msg_id"])
+
+            await db.commit()
+
+        # Fire automation triggers for truly new INCOMING messages only
+        for m in truly_new:
+            if m["direction"] != "incoming":
+                continue
+            # Skip messages sent by the bot itself
+            if m["sender_id"] in ("agent",):
+                continue
+            logger.info(
+                "WA poll: new incoming message in %s from %s: %r",
+                group_name, m["sender_name"] or m["sender_id"], (m["text"] or "")[:60],
+            )
+            asyncio.create_task(
+                on_whatsapp_message(
+                    chat_id=chat_id,
+                    sender_id=m["sender_id"],
+                    sender_name=m["sender_name"] or "",
+                    message_text=m["text"] or "",
+                    group_name=group_name,
+                )
+            )
+
+
+async def _wa_seed_seen_from_db() -> None:
+    """On startup, load all already-stored message_ids into _wa_seen_ids.
+
+    This prevents re-firing automations for messages that were stored in a
+    previous session (before the polling loop started).
+    """
+    from sqlalchemy import select as _select
+    from app.db.models import WhatsAppMessage as _WAMsg
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(_select(_WAMsg.chat_id, _WAMsg.message_id))
+        rows = result.fetchall()
+
+    async with _wa_seen_lock:
+        for chat_id, msg_id in rows:
+            _wa_seen_ids.setdefault(chat_id, set()).add(msg_id)
+
+    logger.info("WA poll: seeded seen-set with %d existing message IDs", len(rows))
+
+
+async def _wa_poll_loop() -> None:
+    """Background loop: polls all enabled WhatsApp groups every WHATSAPP_POLL_INTERVAL seconds."""
+    from sqlalchemy import select as _select
+    from app.db.models import WhatsAppGroup
+
+    await _wa_seed_seen_from_db()
+    logger.info("WA poll: background polling started (interval=%ds)", WHATSAPP_POLL_INTERVAL)
+
+    while True:
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    _select(WhatsAppGroup).where(WhatsAppGroup.enabled == True)  # noqa: E712
+                )
+                groups = result.scalars().all()
+
+            if groups and app_config.whatsapp_enabled():
+                # Poll each group concurrently
+                await asyncio.gather(
+                    *[_wa_poll_group(g.chat_id, g.name) for g in groups],
+                    return_exceptions=True,
+                )
+        except Exception as exc:
+            logger.warning("WA poll: loop error: %s", exc)
+
+        await asyncio.sleep(WHATSAPP_POLL_INTERVAL)
+
+
 async def start_automations_runtime() -> None:
     """Called from app startup. Initialises scheduler + observer, loads all enabled automations."""
-    global _scheduler, _observer
+    global _scheduler, _observer, _wa_poll_task
 
     loop = asyncio.get_running_loop()
 
@@ -705,6 +893,11 @@ async def start_automations_runtime() -> None:
     for automation in automations:
         _register_automation(automation, loop)
 
+    # Start WhatsApp polling loop if WhatsApp is configured
+    if app_config.whatsapp_enabled():
+        _wa_poll_task = asyncio.create_task(_wa_poll_loop())
+        logger.info("WA poll: task created")
+
     logger.info(
         "Automations runtime started: %d automation(s) loaded", len(automations)
     )
@@ -712,7 +905,15 @@ async def start_automations_runtime() -> None:
 
 async def stop_automations_runtime() -> None:
     """Called from app shutdown."""
-    global _scheduler, _observer
+    global _scheduler, _observer, _wa_poll_task
+
+    if _wa_poll_task and not _wa_poll_task.done():
+        _wa_poll_task.cancel()
+        try:
+            await _wa_poll_task
+        except asyncio.CancelledError:
+            pass
+        _wa_poll_task = None
 
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)

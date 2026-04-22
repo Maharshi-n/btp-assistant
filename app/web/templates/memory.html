@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+
+{% block title %}Memory — RAION{% endblock %}
+
+{% block content %}
+<div class="min-h-screen bg-gray-50">
+
+  <!-- Top bar -->
+  <header class="bg-white border-b shadow-sm px-6 py-4 flex items-center gap-4">
+    <a href="/" class="text-gray-500 hover:text-gray-800 transition-colors">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+      </svg>
+    </a>
+    <h1 class="text-base font-semibold text-gray-800">Memory</h1>
+    <span class="ml-auto text-xs text-gray-400" id="count-label">{{ memories|length }} entr{{ 'ies' if memories|length != 1 else 'y' }}</span>
+  </header>
+
+  <main class="max-w-2xl mx-auto px-4 py-8 space-y-6">
+
+    <!-- Auto-memory toggle card -->
+    <section class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="px-6 py-4 flex items-center justify-between">
+        <div>
+          <p class="text-sm font-semibold text-gray-700">Auto-memory</p>
+          <p class="text-xs text-gray-500 mt-0.5">Automatically extract and save facts from conversations</p>
+        </div>
+        <button id="auto-memory-toggle"
+                onclick="toggleAutoMemory()"
+                class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none
+                       {% if auto_memory_enabled %}bg-blue-600{% else %}bg-gray-300{% endif %}">
+          <span id="auto-memory-dot"
+                class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform
+                       {% if auto_memory_enabled %}translate-x-6{% else %}translate-x-1{% endif %}">
+          </span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Add memory card -->
+    <section class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="px-6 py-4 border-b bg-gray-50 flex items-center gap-2">
+        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+        </svg>
+        <h2 class="text-sm font-semibold text-gray-700">Add Memory</h2>
+      </div>
+      <div class="px-6 py-5">
+        <div class="flex gap-2">
+          <textarea id="memory-input" rows="2"
+                    placeholder="Add a memory..."
+                    class="flex-1 rounded-xl border border-gray-300 px-3 py-2 text-sm resize-none
+                           focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+          <button onclick="addMemory()"
+                  class="self-end px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-medium
+                         hover:bg-blue-700 transition-colors whitespace-nowrap">
+            Save
+          </button>
+        </div>
+        <p id="add-error" class="hidden mt-2 text-xs text-red-600"></p>
+      </div>
+    </section>
+
+    <!-- Memory list -->
+    <div id="memory-list" class="space-y-2">
+      {% if not memories %}
+      <div id="empty-state" class="text-center py-12 text-gray-400 text-sm">
+        No memories yet. Add one above.
+      </div>
+      {% else %}
+      {% for m in memories %}
+      <div id="memory-{{ m.id }}" class="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-4 flex items-start gap-3">
+        <svg class="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+        </svg>
+        <p class="flex-1 text-sm text-gray-800 leading-relaxed">{{ m.content }}</p>
+        <button onclick="deleteMemory({{ m.id }})"
+                class="flex-shrink-0 text-gray-300 hover:text-red-500 transition-colors ml-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+      {% endfor %}
+      {% endif %}
+    </div>
+
+  </main>
+</div>
+
+<script>
+  let memoryCount = {{ memories|length }};
+  let autoMemoryEnabled = {{ 'true' if auto_memory_enabled else 'false' }};
+
+  async function toggleAutoMemory() {
+    autoMemoryEnabled = !autoMemoryEnabled;
+    const btn = document.getElementById('auto-memory-toggle');
+    const dot = document.getElementById('auto-memory-dot');
+    btn.classList.toggle('bg-blue-600', autoMemoryEnabled);
+    btn.classList.toggle('bg-gray-300', !autoMemoryEnabled);
+    dot.classList.toggle('translate-x-6', autoMemoryEnabled);
+    dot.classList.toggle('translate-x-1', !autoMemoryEnabled);
+    await fetch('/api/memory/auto-config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: autoMemoryEnabled}),
+    });
+  }
+
+  function updateCountLabel() {
+    const label = document.getElementById('count-label');
+    label.textContent = memoryCount + ' entr' + (memoryCount !== 1 ? 'ies' : 'y');
+  }
+
+  async function addMemory() {
+    const input = document.getElementById('memory-input');
+    const errorEl = document.getElementById('add-error');
+    const content = input.value.trim();
+
+    errorEl.classList.add('hidden');
+
+    if (!content) {
+      errorEl.textContent = 'Please enter something to remember.';
+      errorEl.classList.remove('hidden');
+      return;
+    }
+
+    try {
+      const resp = await fetch('/api/memory', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({content}),
+      });
+
+      if (!resp.ok) {
+        const data = await resp.json();
+        throw new Error(data.detail || 'Failed to save memory');
+      }
+
+      const mem = await resp.json();
+      input.value = '';
+
+      // Remove empty state if present
+      const empty = document.getElementById('empty-state');
+      if (empty) empty.remove();
+
+      // Prepend new memory card
+      const list = document.getElementById('memory-list');
+      const card = document.createElement('div');
+      card.id = 'memory-' + mem.id;
+      card.className = 'bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-4 flex items-start gap-3';
+      card.innerHTML = `
+        <svg class="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+        </svg>
+        <p class="flex-1 text-sm text-gray-800 leading-relaxed">${escapeHtml(mem.content)}</p>
+        <button onclick="deleteMemory(${mem.id})"
+                class="flex-shrink-0 text-gray-300 hover:text-red-500 transition-colors ml-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      `;
+      list.prepend(card);
+      memoryCount++;
+      updateCountLabel();
+    } catch (err) {
+      errorEl.textContent = err.message;
+      errorEl.classList.remove('hidden');
+    }
+  }
+
+  async function deleteMemory(id) {
+    if (!confirm('Do you really want to delete this memory?')) return;
+    try {
+      const resp = await fetch('/api/memory/' + id, {method: 'DELETE'});
+      if (!resp.ok) throw new Error('Failed to delete');
+
+      const card = document.getElementById('memory-' + id);
+      if (card) card.remove();
+
+      memoryCount--;
+      updateCountLabel();
+
+      if (memoryCount === 0) {
+        const list = document.getElementById('memory-list');
+        list.innerHTML = '<div id="empty-state" class="text-center py-12 text-gray-400 text-sm">No memories yet. Add one above.</div>';
+      }
+    } catch (err) {
+      alert('Could not delete memory: ' + err.message);
+    }
+  }
+
+  function escapeHtml(text) {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // Allow Ctrl+Enter or Enter (without shift) to save
+  document.getElementById('memory-input').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      addMemory();
+    }
+  });
+</script>
+{% endblock %}

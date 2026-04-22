@@ -254,10 +254,27 @@ async def _stream_langgraph(
         # desc() + limit gives us the 30 most recent; reverse for chronological order
         messages = list(reversed(result.scalars().all()))
 
+        # If this is a follow-up in an automation thread (multiple messages exist
+        # and the user is the one sending now), strip the [AUTOMATION RUN — ...]
+        # prefix from the first message so the LLM isn't permanently framed in
+        # the automation context (e.g. interpreting "send it here" as Telegram).
+        _AUTOMATION_PREFIX = "[AUTOMATION RUN"
+        is_followup = len(messages) > 1 and messages[-1].role == "user"
+
+        def _clean_content(m: "Message", idx: int) -> str:
+            if idx == 0 and is_followup and m.role == "user" and m.content.startswith(_AUTOMATION_PREFIX):
+                # Strip everything up to and including the closing "]" + newlines
+                content = m.content
+                bracket_end = content.find("]")
+                if bracket_end != -1:
+                    content = content[bracket_end + 1:].lstrip("\n")
+                return content
+            return m.content
+
         lc_messages = _sanitize_messages([
-            HumanMessage(content=m.content) if m.role == "user"
+            HumanMessage(content=_clean_content(m, i)) if m.role == "user"
             else AIMessage(content=m.content)
-            for m in messages
+            for i, m in enumerate(messages)
         ])
 
         graph = get_graph()

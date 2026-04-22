@@ -74,10 +74,14 @@ gmail_keyword_match:
   - "important mail from HR" → {{"keywords": "from:hr subject:important OR urgent"}}
 
 fs_new_in_folder:
-  {{"folder": "<absolute path>"}}
+  {{"folder": "<absolute path>", "file_extensions": ["<ext>", ...]}}
   - If user says a relative path or folder name, prefix with: {workspace}
   - e.g. "inbox" → "{workspace}/inbox"
   - e.g. "mndc_mails" → "{workspace}/mndc_mails"
+  - file_extensions: list of lowercase extensions WITHOUT the dot to filter on.
+    e.g. "only PDFs" → ["pdf"], "only images" → ["jpg","jpeg","png","gif","webp"]
+    "txt and csv" → ["txt","csv"], "any file" or no filter mentioned → [] (empty = all files)
+  - ALWAYS extract file type constraints from the description — never leave them in the action_prompt
 
 whatsapp_group_new:
   {{"chat_id": "<group chat_id ending in @g.us, or empty string for any monitored group>"}}
@@ -141,12 +145,18 @@ Do NOT tell the assistant to fetch or read the email — it already has it. Focu
   GOOD: "Read the email above. Write a 3-sentence summary covering: who sent it, what they want, and any action required. Save it to email_summaries.txt in my workspace, appending with today's date."
 
 FOR FS_NEW_IN_FOLDER TRIGGERS — the exact file path is injected automatically at runtime.
-Do NOT tell the assistant to look for a file — it has the path. Focus on what to do with it:
+Do NOT tell the assistant to look for a file — it has the path. Focus on what to do with it.
+File-type filtering is handled in code (via file_extensions in trigger_config) — do NOT put
+"if it is a PDF" or any file-type conditions in the action_prompt. The automation only fires
+for matching files.
   BAD : "Analyze the new file"
   GOOD: "Read the new file at the path shown above. Analyze its contents and write a structured report covering: key topics, important data points, and a 2-sentence conclusion. Save the report as report_<original_filename>.txt in my workspace."
 
   BAD : "Process the file"
   GOOD: "Read the new file shown above and translate its entire contents to Hindi. Save the translation to the same filename with _hindi appended, inside my workspace."
+
+  BAD : "If it is a PDF, send it to me on Telegram"
+  GOOD (trigger_config has file_extensions: ["pdf"]): "Read the new file at the path shown above. Send me a Telegram notification via telegram_send with the file path and a 1-sentence description of its contents."
 
 FOR FS_NEW_IN_FOLDER + telegram_ask:
 A "TRUSTED TRIGGER CONTEXT" block is injected at runtime containing conversation_id and file_path.

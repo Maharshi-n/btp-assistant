@@ -78,7 +78,6 @@ async def telegram_send(message: str, config: RunnableConfig = None) -> str:
             resp = await client.post(url, json={"chat_id": chat_id, "text": text_to_send})
             if resp.status_code == 200:
                 logger.info("Telegram notification sent successfully")
-                return "Sent."
             else:
                 body = resp.text[:300]
                 logger.warning("Telegram API error %d: %s", resp.status_code, body)
@@ -86,6 +85,64 @@ async def telegram_send(message: str, config: RunnableConfig = None) -> str:
     except Exception as exc:
         logger.warning("telegram_send failed: %s", exc)
         return f"Failed to send Telegram notification: {exc}"
+
+    # For automation runs, register a pending reply so the user's next Telegram
+    # message continues in this thread (with full context) instead of starting
+    # a new one. Without this, replies like "send it here" create a context-free
+    # new thread and the agent can't resolve what "it" refers to.
+    if is_automation and thread_id:
+        try:
+            from app.db.engine import AsyncSessionLocal
+            from app.db.models import TelegramPendingReply
+            from sqlalchemy import delete, select
+            now2 = datetime.now(timezone.utc)
+            async with AsyncSessionLocal() as db:
+                # Only register if no other active pending reply exists for this chat
+                existing2 = await db.execute(
+                    select(TelegramPendingReply)
+                    .where(TelegramPendingReply.chat_id == chat_id)
+                    .where(TelegramPendingReply.expires_at > now2)
+                )
+                active2 = existing2.scalars().first()
+                if active2 is None:
+                    expires2 = now2 + timedelta(hours=1)
+                    await db.execute(
+                        delete(TelegramPendingReply).where(TelegramPendingReply.chat_id == chat_id)
+                    )
+                    # Look up conversation_id for this thread
+                    conv_id: int | None = None
+                    try:
+                        from app.db.models import AutomationConversation
+                        from sqlalchemy import desc
+                        conv_result = await db.execute(
+                            select(AutomationConversation)
+                            .where(AutomationConversation.db_thread_id == thread_id)
+                            .where(AutomationConversation.status == "active")
+                            .order_by(desc(AutomationConversation.created_at))
+                            .limit(1)
+                        )
+                        conv_row = conv_result.scalars().first()
+                        conv_id = conv_row.id if conv_row else None
+                    except Exception:
+                        pass
+                    pending2 = TelegramPendingReply(
+                        chat_id=chat_id,
+                        continuation_prompt="",
+                        last_question="",
+                        thread_id=thread_id,
+                        conversation_id=conv_id,
+                        expires_at=expires2,
+                    )
+                    db.add(pending2)
+                    await db.commit()
+                    logger.info(
+                        "telegram_send: registered pending reply for automation thread %d conv %s",
+                        thread_id, conv_id,
+                    )
+        except Exception as exc:
+            logger.warning("telegram_send: failed to register pending reply: %s", exc)
+
+    return "Sent."
 
 
 @tool

@@ -596,8 +596,12 @@ async def _run_continuation(user_reply: str, conversation_id: int) -> str:
         },
     }
 
-    # Send just the user's reply — the LangGraph checkpointer carries all prior context
-    lc_messages = [HumanMessage(content=user_reply)]
+    # Prefix with Telegram context so the LLM knows this is a follow-up reply
+    # from the user in the active Telegram conversation — not a new automation trigger.
+    # This prevents the LLM from re-running the original automation action (e.g. calling
+    # telegram_send with the same notification) instead of responding to the user's request.
+    tagged_reply = f"[via Telegram — user follow-up reply] {user_reply}"
+    lc_messages = [HumanMessage(content=tagged_reply)]
     full_content: list[str] = []
     last_ai_content: str = ""
 

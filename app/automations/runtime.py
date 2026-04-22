@@ -165,10 +165,13 @@ async def _fire_automation(automation_id: int, trigger_context: dict | None = No
                 )
                 effective_prompt = (
                     "[AUTOMATION RUN — execute immediately, no questions. "
-                    "You MUST call tools as instructed. Do NOT just reply with text — "
-                    "if the action says call telegram_send, you MUST call it as a tool. "
-                    "After completing the task, end your reply with: 'File: <exact file path>' "
-                    "so the path is visible in the thread for follow-up actions.]\n\n"
+                    "You MUST call tools as instructed. Do NOT just reply with text. "
+                    "CRITICAL: You MUST call telegram_send as a real tool call — do NOT describe "
+                    "what you would send, do NOT say 'I sent' without actually calling the tool. "
+                    "If the action_prompt says to only notify for certain file types, you MUST still "
+                    "call telegram_send for every file — either with the relevant content OR with a "
+                    "message explaining the file was skipped (e.g. 'New file: X (not a PDF, skipped)'). "
+                    "Never hallucinate a tool call — if you did not call telegram_send, do not claim you did.]\n\n"
                     + automation.action_prompt
                     + f"\n\nconversation_id: {conversation_id}"
                     + f"\nTriggered by new file: {trigger_context['file_path']}"
@@ -567,24 +570,62 @@ async def _persist_last_seen(automation_id: int, message_id: str) -> None:
 class _NewFileHandler(FileSystemEventHandler):
     """Fire an automation when a new file is created in the watched folder."""
 
-    def __init__(self, automation_id: int, loop: asyncio.AbstractEventLoop) -> None:
+    # Debounce window in seconds — Windows emits multiple on_created events
+    # for the same file (create + write flushes). Ignore duplicates within this window.
+    _DEBOUNCE_SECONDS = 5.0
+
+    def __init__(
+        self,
+        automation_id: int,
+        loop: asyncio.AbstractEventLoop,
+        file_extensions: list[str] | None = None,
+    ) -> None:
         super().__init__()
         self._automation_id = automation_id
         self._loop = loop  # uvicorn's event loop, captured at registration time
+        # Lowercase extensions without dot, e.g. ["pdf", "txt"]. Empty = all files.
+        self._file_extensions: list[str] = [e.lower().lstrip(".") for e in (file_extensions or [])]
+        # path → monotonic timestamp of last fire, for debouncing
+        self._last_fired: dict[str, float] = {}
 
     def on_created(self, event: FileCreatedEvent) -> None:  # type: ignore[override]
         if event.is_directory:
             return
+        import time
+        file_path = event.src_path
+
+        # Debounce: skip if this exact path fired within the cooldown window
+        now = time.monotonic()
+        last = self._last_fired.get(file_path, 0.0)
+        if now - last < self._DEBOUNCE_SECONDS:
+            logger.debug(
+                "fs_new_in_folder automation %d: debouncing duplicate event for %s",
+                self._automation_id, file_path,
+            )
+            return
+        self._last_fired[file_path] = now
+        # Evict old entries to prevent unbounded growth
+        cutoff = now - 60.0
+        self._last_fired = {p: t for p, t in self._last_fired.items() if t > cutoff}
+
+        # Extension filter: if configured, skip files that don't match
+        if self._file_extensions:
+            ext = Path(file_path).suffix.lower().lstrip(".")
+            if ext not in self._file_extensions:
+                logger.debug(
+                    "fs_new_in_folder automation %d: skipping %s (ext %r not in %s)",
+                    self._automation_id, file_path, ext, self._file_extensions,
+                )
+                return
         logger.info(
             "fs_new_in_folder automation %d: new file %s",
-            self._automation_id,
-            event.src_path,
+            self._automation_id, file_path,
         )
         # watchdog runs in a separate thread — schedule on uvicorn's loop
         asyncio.run_coroutine_threadsafe(
             _fire_automation(
                 self._automation_id,
-                trigger_context={"file_path": event.src_path},
+                trigger_context={"file_path": file_path},
             ),
             self._loop,
         )
@@ -671,10 +712,14 @@ def _register_automation(automation: Automation, loop: asyncio.AbstractEventLoop
         # Ensure the folder exists
         Path(watch_path).mkdir(parents=True, exist_ok=True)
         if _observer and aid not in _fs_handlers:
-            handler = _NewFileHandler(aid, loop)
+            file_extensions: list[str] = config.get("file_extensions") or []
+            handler = _NewFileHandler(aid, loop, file_extensions=file_extensions)
             watch = _observer.schedule(handler, watch_path, recursive=False)
             _fs_handlers[aid] = (watch, watch_path)
-            logger.info("Registered fs_new_in_folder automation %d: %s", aid, watch_path)
+            logger.info(
+                "Registered fs_new_in_folder automation %d: %s (filter: %s)",
+                aid, watch_path, file_extensions or "all files",
+            )
     elif trigger_type in ("whatsapp_group_new", "whatsapp_keyword_match", "whatsapp_outgoing_new", "whatsapp_smart_reply"):
         # Webhook-driven — no scheduler job needed; on_whatsapp_message() / on_whatsapp_outgoing() handles dispatch
         logger.info(

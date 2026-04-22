@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -49,25 +49,6 @@ engine = create_async_engine(
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
-def _set_sqlite_pragmas(dbapi_conn, _connection_record):
-    """Enable WAL mode and set busy timeout on every new SQLite connection.
-
-    WAL (Write-Ahead Logging) allows concurrent readers and one writer
-    without blocking, eliminating 'database is locked' errors under load.
-    busy_timeout is a belt-and-suspenders fallback (milliseconds).
-    """
-    cursor = dbapi_conn.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA busy_timeout=30000")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.close()
-
-
-if _is_sqlite:
-    # Register for both sync and async engines
-    event.listen(_sync_engine, "connect", _set_sqlite_pragmas)
-    event.listen(engine.sync_engine, "connect", _set_sqlite_pragmas)
-
 
 async def get_db() -> AsyncSession:
     async with AsyncSessionLocal() as session:
@@ -77,4 +58,8 @@ async def get_db() -> AsyncSession:
 async def init_db() -> None:
     """Create all tables on startup."""
     async with engine.begin() as conn:
+        if _is_sqlite:
+            await conn.execute(text("PRAGMA journal_mode=WAL"))
+            await conn.execute(text("PRAGMA busy_timeout=30000"))
+            await conn.execute(text("PRAGMA synchronous=NORMAL"))
         await conn.run_sync(Base.metadata.create_all)

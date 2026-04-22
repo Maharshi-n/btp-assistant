@@ -1122,6 +1122,7 @@ async def telegram_webhook(
                 # Fetch last AI message from that thread
                 async with AsyncSessionLocal() as db:
                     from sqlalchemy import desc
+                    from app.db.models import AutomationConversation
                     _last_msg_result = await db.execute(
                         select(Message)
                         .where(Message.thread_id == _switch_tid)
@@ -1131,8 +1132,20 @@ async def telegram_webhook(
                     )
                     _last_msg = _last_msg_result.scalars().first()
 
-                # Register this thread as active
-                await _register_pending_reply(chat_id, _switch_tid, conversation_id=None)
+                    # Look up the AutomationConversation for this thread so replies
+                    # resume the correct LangGraph checkpoint (not a fresh tg_ one)
+                    _conv_result = await db.execute(
+                        select(AutomationConversation)
+                        .where(AutomationConversation.db_thread_id == _switch_tid)
+                        .where(AutomationConversation.status == "active")
+                        .order_by(desc(AutomationConversation.created_at))
+                        .limit(1)
+                    )
+                    _switch_conv = _conv_result.scalars().first()
+                    _switch_conv_id = _switch_conv.id if _switch_conv else None
+
+                # Register this thread as active, preserving conversation_id
+                await _register_pending_reply(chat_id, _switch_tid, conversation_id=_switch_conv_id)
 
                 last_text = _last_msg.content if _last_msg else "(no messages yet)"
                 reply = (

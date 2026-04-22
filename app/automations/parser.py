@@ -27,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.config as app_config
-from app.db.models import Skill, UserMemory
+from app.db.models import Skill, UserMemory, WhatsAppGroup
 
 _SYSTEM_PROMPT = """\
 Convert a natural-language automation description into a JSON object.
@@ -292,14 +292,27 @@ async def _build_context_block(db: Optional[AsyncSession]) -> str:
     except Exception:
         skills = []
 
+    try:
+        wa_result = await db.execute(
+            select(WhatsAppGroup).where(WhatsAppGroup.enabled == True).order_by(WhatsAppGroup.name)
+        )
+        wa_groups = wa_result.scalars().all()
+    except Exception:
+        wa_groups = []
+
     memory_block = "\n".join(f"- {m.content}" for m in memories) or "(none)"
     skill_block = "\n".join(f"- /{s.name}: {s.trigger_description}" for s in skills) or "(none)"
+    wa_block = "\n".join(f"- {g.name}: {g.chat_id}" for g in wa_groups) or "(none)"
 
     return (
         "━━━ USER MEMORIES (resolve names/teams/places to concrete values) ━━━\n"
         f"{memory_block}\n\n"
         "━━━ AVAILABLE SKILLS (reusable procedures the runtime agent can load) ━━━\n"
         f"{skill_block}\n\n"
+        "━━━ REGISTERED WHATSAPP GROUPS (name → chat_id) ━━━\n"
+        f"{wa_block}\n"
+        "RULE: When the user references a WhatsApp group by name, look it up above and use the exact "
+        "chat_id in trigger_config. Never leave chat_id empty if the group is listed above.\n\n"
         "RULES:\n"
         "- If the description references a person/team (e.g. \"my ML team\"), look up USER MEMORIES "
         "and include the resolved email addresses in the action_prompt. Keep the original name too so "

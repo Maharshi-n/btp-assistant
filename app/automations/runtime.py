@@ -49,6 +49,23 @@ _gmail_poll_locks: dict[int, asyncio.Lock] = {}
 # WhatsApp polling background task handle
 _wa_poll_task: asyncio.Task | None = None
 
+# Whether polling is active — can be toggled at runtime without restarting
+_wa_polling_enabled: bool = True
+
+# Unix timestamp of when the server started — messages older than this are
+# skipped on the first poll after a restart to avoid replaying the backlog
+_server_start_unix: float = 0.0
+
+
+def get_wa_polling_enabled() -> bool:
+    return _wa_polling_enabled
+
+
+def set_wa_polling_enabled(enabled: bool) -> None:
+    global _wa_polling_enabled
+    _wa_polling_enabled = enabled
+    logger.info("WA poll: polling %s", "enabled" if enabled else "paused")
+
 
 # ---------------------------------------------------------------------------
 # Trigger-fire helper
@@ -153,14 +170,11 @@ async def _fire_automation(automation_id: int, trigger_context: dict | None = No
                 )
             elif trigger_context.get("whatsapp"):
                 trusted = trigger_context.get("trusted_block", "")
-                # Append thread_id so action_prompt can reference it in Telegram notifications
-                trusted += f"\nthread_id: {thread.id}"
                 effective_prompt = (
                     "[AUTOMATION RUN — execute immediately, no questions. "
                     "You MUST call tools as instructed. Do NOT just reply with text — "
                     "if the action says call telegram_send or whatsapp_send, you MUST call it as a tool. "
-                    "When sending a Telegram notification, ALWAYS include the thread_id from TRUSTED TRIGGER CONTEXT "
-                    "at the end of the message so the user can open it: e.g. 'Thread: #<thread_id>']\n\n"
+                    f"This run's thread_id is {thread.id} — include it in Telegram notifications as 'Thread: #{thread.id}']\n\n"
                     + automation.action_prompt
                     + trusted
                 )
@@ -699,16 +713,19 @@ def unregister_automation(automation_id: int) -> None:
 _wa_seen_ids: dict[str, set[str]] = {}  # chat_id → set of message_id strings
 _wa_seen_lock = asyncio.Lock()
 
-WHATSAPP_POLL_INTERVAL = 30  # seconds between polls per group
+WHATSAPP_POLL_INTERVAL = 15  # seconds between polls
 WHATSAPP_POLL_FETCH_COUNT = 100  # messages to fetch per poll — covers bursts well above normal group activity
 
 
-async def _wa_poll_group(chat_id: str, group_name: str) -> None:
+async def _wa_poll_group(chat_id: str, group_name: str, registered_at_unix: float = 0.0) -> None:
     """Fetch recent messages for one group via Green API and store any new ones.
 
     Uses the in-memory _wa_seen_ids set (seeded from DB on startup) to skip
     messages already stored, so there is never any overlap regardless of how
     many times this runs.
+
+    registered_at_unix: Unix timestamp of when the group was added to RAION.
+    Messages older than this are skipped entirely (option-2 cutoff).
     """
     from app.integrations.green_api import get_green_client, GreenAPIError
     from app.db.models import WhatsAppMessage as _WAMsg
@@ -736,6 +753,14 @@ async def _wa_poll_group(chat_id: str, group_name: str) -> None:
         for m in raw_messages:
             msg_id: str = m.get("idMessage", "")
             if not msg_id or msg_id in seen:
+                continue
+
+            # Skip messages older than the effective cutoff:
+            # max of group registration time and server start time.
+            # This prevents replaying history both on first group add and on server restart.
+            effective_cutoff = max(registered_at_unix, _server_start_unix)
+            if effective_cutoff and m.get("timestamp", 0) < effective_cutoff:
+                seen.add(msg_id)  # mark as seen so we never re-check
                 continue
 
             direction = m.get("type", "incoming")  # "incoming" | "outgoing"
@@ -800,26 +825,40 @@ async def _wa_poll_group(chat_id: str, group_name: str) -> None:
 
             await db.commit()
 
-        # Fire automation triggers for truly new INCOMING messages only
+        # Fire automation triggers for truly new messages
         for m in truly_new:
-            if m["direction"] != "incoming":
-                continue
-            # Skip messages sent by the bot itself
-            if m["sender_id"] in ("agent",):
-                continue
-            logger.info(
-                "WA poll: new incoming message in %s from %s: %r",
-                group_name, m["sender_name"] or m["sender_id"], (m["text"] or "")[:60],
-            )
-            asyncio.create_task(
-                on_whatsapp_message(
-                    chat_id=chat_id,
-                    sender_id=m["sender_id"],
-                    sender_name=m["sender_name"] or "",
-                    message_text=m["text"] or "",
-                    group_name=group_name,
+            if m["direction"] == "incoming":
+                logger.info(
+                    "WA poll: new incoming in %s from %s: %r",
+                    group_name, m["sender_name"] or m["sender_id"], (m["text"] or "")[:60],
                 )
-            )
+                asyncio.create_task(
+                    on_whatsapp_message(
+                        chat_id=chat_id,
+                        sender_id=m["sender_id"] or "",
+                        sender_name=m["sender_name"] or "",
+                        message_text=m["text"] or "",
+                        group_name=group_name,
+                    )
+                )
+            elif m["direction"] == "outgoing" and m["sender_id"] not in ("agent", "RAION"):
+                # Phone-owner outgoing messages (sender_id is empty/None from Green API).
+                # Fire on_whatsapp_outgoing so whatsapp_outgoing_new automations can react
+                # (e.g. "log my replies to logs.txt"). Safe: these automations should call
+                # telegram_send or write_file, NOT whatsapp_send — that would loop.
+                logger.info(
+                    "WA poll: new outgoing (phone owner) in %s: %r",
+                    group_name, (m["text"] or "")[:60],
+                )
+                asyncio.create_task(
+                    on_whatsapp_outgoing(
+                        chat_id=chat_id,
+                        message_text=m["text"] or "",
+                        group_name=group_name,
+                        sender_id=m["sender_id"] or "",
+                        sender_name=m["sender_name"] or "",
+                    )
+                )
 
 
 async def _wa_seed_seen_from_db() -> None:
@@ -858,10 +897,17 @@ async def _wa_poll_loop() -> None:
                 )
                 groups = result.scalars().all()
 
-            if groups and app_config.whatsapp_enabled():
-                # Poll each group concurrently
+            if groups and app_config.whatsapp_enabled() and _wa_polling_enabled:
+                # Poll each group concurrently, passing registration timestamp as cutoff
                 await asyncio.gather(
-                    *[_wa_poll_group(g.chat_id, g.name) for g in groups],
+                    *[
+                        _wa_poll_group(
+                            g.chat_id,
+                            g.name,
+                            registered_at_unix=g.created_at.replace(tzinfo=timezone.utc).timestamp(),
+                        )
+                        for g in groups
+                    ],
                     return_exceptions=True,
                 )
         except Exception as exc:
@@ -872,7 +918,8 @@ async def _wa_poll_loop() -> None:
 
 async def start_automations_runtime() -> None:
     """Called from app startup. Initialises scheduler + observer, loads all enabled automations."""
-    global _scheduler, _observer, _wa_poll_task
+    global _scheduler, _observer, _wa_poll_task, _server_start_unix
+    _server_start_unix = datetime.now(timezone.utc).timestamp()
 
     loop = asyncio.get_running_loop()
 
@@ -895,8 +942,11 @@ async def start_automations_runtime() -> None:
 
     # Start WhatsApp polling loop if WhatsApp is configured
     if app_config.whatsapp_enabled():
-        _wa_poll_task = asyncio.create_task(_wa_poll_loop())
-        logger.info("WA poll: task created")
+        if _wa_poll_task is None or _wa_poll_task.done():
+            _wa_poll_task = asyncio.create_task(_wa_poll_loop())
+            logger.info("WA poll: task created")
+        else:
+            logger.info("WA poll: task already running, skipping duplicate start")
 
     logger.info(
         "Automations runtime started: %d automation(s) loaded", len(automations)
@@ -1123,10 +1173,14 @@ async def on_whatsapp_outgoing(
     chat_id: str,
     message_text: str,
     group_name: str = "",
+    sender_id: str = "agent",
+    sender_name: str = "RAION",
 ) -> None:
-    """Called when an outgoing WhatsApp message is stored (sent by agent or manual UI send).
+    """Called when an outgoing WhatsApp message is stored (sent by agent, manual UI, or phone owner).
 
     Fires all enabled whatsapp_outgoing_new automations that match the chat_id.
+    sender_id/sender_name default to 'agent'/'RAION' for RAION-sent messages;
+    pass empty string for phone-owner messages captured via polling.
     """
     from sqlalchemy import select
 
@@ -1141,8 +1195,8 @@ async def on_whatsapp_outgoing(
 
     wa_context = {
         "chat_id": chat_id,
-        "sender_id": "agent",
-        "sender_name": "RAION",
+        "sender_id": sender_id,
+        "sender_name": sender_name or "you (phone owner)",
         "message_text": message_text,
         "group_name": group_name,
     }

@@ -466,3 +466,21 @@ async def set_webhook_url(payload: WebhookUrlPayload, _user=Depends(require_user
         raise HTTPException(status_code=502, detail=str(exc))
 
     return {"ok": True, "webhook_url": webhook_url}
+
+
+# ---------------------------------------------------------------------------
+# Polling toggle
+# ---------------------------------------------------------------------------
+
+@router.get("/api/whatsapp/polling")
+async def get_polling_status(_user=Depends(require_user)):
+    from app.automations.runtime import get_wa_polling_enabled
+    return {"enabled": get_wa_polling_enabled()}
+
+
+@router.post("/api/whatsapp/polling/toggle")
+async def toggle_polling(_user=Depends(require_user)):
+    from app.automations.runtime import get_wa_polling_enabled, set_wa_polling_enabled
+    new_state = not get_wa_polling_enabled()
+    set_wa_polling_enabled(new_state)
+    return {"enabled": new_state}

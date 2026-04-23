@@ -59,6 +59,19 @@ _server_start_unix: float = 0.0
 # Guard to prevent start_automations_runtime from running more than once
 _runtime_started: bool = False
 
+# ---------------------------------------------------------------------------
+# WhatsApp debounce — 15-second window per (chat_id, sender_id)
+# ---------------------------------------------------------------------------
+
+# (chat_id, sender_id) → asyncio.TimerHandle
+_wa_debounce_timers: dict[tuple[str, str], asyncio.TimerHandle] = {}
+
+# (chat_id, sender_id) → list of wa_context dicts (one per message in window)
+_wa_debounce_buffer: dict[tuple[str, str], list[dict]] = {}
+
+_WA_DEBOUNCE_SECONDS = 15
+_WA_HISTORY_COUNT = 15  # messages of recent chat history to fetch for context
+
 
 def get_wa_polling_enabled() -> bool:
     return _wa_polling_enabled
@@ -1039,6 +1052,8 @@ async def stop_automations_runtime() -> None:
 
 async def _fire_whatsapp_automation(automation_id: int, wa_context: dict) -> None:
     """Fire a WhatsApp-triggered automation with the incoming message context."""
+    history = wa_context.get("recent_history", "")
+    history_block = f"\n\nRecent chat history (last {_WA_HISTORY_COUNT} messages, oldest first):\n{history}" if history else ""
     trusted_block = (
         f"\n\n━━━ TRUSTED TRIGGER CONTEXT ━━━"
         f"\nchat_id: {wa_context.get('chat_id', '')}"
@@ -1047,6 +1062,7 @@ async def _fire_whatsapp_automation(automation_id: int, wa_context: dict) -> Non
         f"\ngroup_name: {wa_context.get('group_name', '')}"
         f"\nmessage_type: {wa_context.get('message_type', 'text')}"
         f"\nmessage_text: {wa_context.get('message_text', '')}"
+        f"{history_block}"
         f"\n━━━ END TRUSTED CONTEXT ━━━"
     )
     await _fire_automation(
@@ -1158,6 +1174,71 @@ async def _fire_whatsapp_smart_reply(automation_id: int, wa_context: dict) -> No
         )
 
 
+async def _fetch_recent_chat_history(chat_id: str) -> str:
+    """Fetch last _WA_HISTORY_COUNT messages from Green API and format as readable block."""
+    try:
+        from app.integrations.green_api import get_green_client
+        client = get_green_client()
+        if client is None:
+            return ""
+        messages = await client.get_chat_history(chat_id, count=_WA_HISTORY_COUNT)
+        if not messages:
+            return ""
+        lines = []
+        for m in reversed(messages):  # oldest first
+            sender = m.get("senderName") or m.get("senderId", "unknown")
+            type_msg = m.get("typeMessage", "")
+            if type_msg == "textMessage":
+                text = m.get("textMessage", "")
+            elif type_msg == "extendedTextMessage":
+                text = (m.get("extendedTextMessage") or {}).get("text", "") or m.get("textMessage", "")
+            elif type_msg in ("imageMessage", "videoMessage", "documentMessage"):
+                text = (m.get(type_msg) or {}).get("caption", "") or f"[{type_msg.replace('Message', '')}]"
+            elif type_msg == "audioMessage":
+                text = "[audio]"
+            elif type_msg:
+                text = f"[{type_msg}]"
+            else:
+                text = ""
+            if text:
+                lines.append(f"  {sender}: {text}")
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.debug("_fetch_recent_chat_history failed: %s", exc)
+        return ""
+
+
+async def _flush_wa_debounce(key: tuple[str, str]) -> None:
+    """Called after debounce window expires. Fires automations with all buffered messages."""
+    buffered = _wa_debounce_buffer.pop(key, [])
+    _wa_debounce_timers.pop(key, None)
+
+    if not buffered:
+        return
+
+    chat_id, sender_id = key
+    # Use the last message's context as the base; combine all texts
+    base = buffered[-1].copy()
+    if len(buffered) > 1:
+        combined_texts = "\n".join(
+            f"[msg {i+1}] {m['message_text']}" for i, m in enumerate(buffered)
+        )
+        base["message_text"] = combined_texts
+        # Use the most severe message_type seen (image/video/audio/document > text)
+        type_priority = {"image": 5, "video": 4, "audio": 3, "document": 2, "location": 1, "text": 0}
+        base["message_type"] = max(
+            (m["message_type"] for m in buffered),
+            key=lambda t: type_priority.get(t, 0),
+        )
+
+    # Fetch recent chat history for LLM context
+    history = await _fetch_recent_chat_history(chat_id)
+    if history:
+        base["recent_history"] = history
+
+    await on_whatsapp_message_fire(base)
+
+
 async def on_whatsapp_message(
     chat_id: str,
     sender_id: str,
@@ -1168,9 +1249,43 @@ async def on_whatsapp_message(
 ) -> None:
     """Called by the WhatsApp webhook handler for every incoming message.
 
-    Checks all enabled WhatsApp automations and fires any that match.
+    Buffers the message and starts/resets a 15s debounce timer per sender.
+    After 15s of silence the batch is flushed and automations are fired once
+    with combined message text + recent chat history for context.
     """
+    wa_context = {
+        "chat_id": chat_id,
+        "sender_id": sender_id,
+        "sender_name": sender_name,
+        "message_text": message_text,
+        "group_name": group_name,
+        "message_type": message_type,
+    }
+
+    key = (chat_id, sender_id)
+    _wa_debounce_buffer.setdefault(key, []).append(wa_context)
+
+    # Cancel existing timer if any
+    existing = _wa_debounce_timers.pop(key, None)
+    if existing:
+        existing.cancel()
+
+    # Schedule flush after debounce window
+    loop = asyncio.get_running_loop()
+    handle = loop.call_later(
+        _WA_DEBOUNCE_SECONDS,
+        lambda: asyncio.create_task(_flush_wa_debounce(key)),
+    )
+    _wa_debounce_timers[key] = handle
+
+
+async def on_whatsapp_message_fire(wa_context: dict) -> None:
+    """Actually match and fire WhatsApp automations for a (possibly batched) message context."""
     from sqlalchemy import select
+
+    chat_id = wa_context.get("chat_id", "")
+    sender_id = wa_context.get("sender_id", "")
+    message_text = wa_context.get("message_text", "")
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -1181,21 +1296,11 @@ async def on_whatsapp_message(
         )
         automations = result.scalars().all()
 
-    wa_context = {
-        "chat_id": chat_id,
-        "sender_id": sender_id,
-        "sender_name": sender_name,
-        "message_text": message_text,
-        "group_name": group_name,
-        "message_type": message_type,
-    }
-
     for automation in automations:
         config: dict = json.loads(automation.trigger_config_json)
 
         if automation.trigger_type == "whatsapp_group_new":
             target_chat = config.get("chat_id", "")
-            # Match if no specific chat_id configured (any group) or exact match
             if not target_chat or target_chat == chat_id:
                 logger.info(
                     "whatsapp_group_new automation %d matched chat_id=%s", automation.id, chat_id
@@ -1215,8 +1320,7 @@ async def on_whatsapp_message(
                 asyncio.create_task(_fire_whatsapp_automation(automation.id, wa_context))
 
         elif automation.trigger_type == "whatsapp_smart_reply":
-            # Skip messages sent by the bot itself to prevent potential loops
-            if wa_context.get("sender_id") in ("agent", app_config.GREEN_API_INSTANCE_ID):
+            if sender_id in ("agent", app_config.GREEN_API_INSTANCE_ID):
                 continue
             target_chat = config.get("chat_id", "")
             if not target_chat or target_chat == chat_id:

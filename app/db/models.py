@@ -90,6 +90,7 @@ class Automation(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
+    raw_description: Mapped[str] = mapped_column(Text, nullable=True)
     trigger_type: Mapped[str] = mapped_column(String(64), nullable=False)
     trigger_config_json: Mapped[str] = mapped_column(Text, nullable=False)
     action_prompt: Mapped[str] = mapped_column(Text, nullable=False)

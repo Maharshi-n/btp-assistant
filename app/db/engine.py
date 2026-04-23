@@ -76,6 +76,12 @@ async def init_db() -> None:
             await conn.execute(text("PRAGMA busy_timeout=30000"))
             await conn.execute(text("PRAGMA synchronous=NORMAL"))
         await conn.run_sync(Base.metadata.create_all)
+        # Migrations: add columns that may not exist in older DBs
+        if _is_sqlite:
+            try:
+                await conn.execute(text("ALTER TABLE automations ADD COLUMN raw_description TEXT"))
+            except Exception:
+                pass  # column already exists
 
     # Set busy_timeout on every future async connection via pool checkout event.
     # WAL mode is already persistent in the file, but busy_timeout is per-connection.

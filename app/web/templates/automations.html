@@ -165,6 +165,11 @@
               Enable
             </button>
             {% endif %}
+            <button onclick="openEditModal({{ a.id }}, {{ a.name|tojson }}, {{ (a.raw_description or a.action_prompt)|tojson }})"
+                    class="px-3 py-1.5 text-xs rounded-lg border border-blue-300 text-blue-600
+                           hover:bg-blue-50 transition-colors font-medium">
+              Edit
+            </button>
             <button onclick="deleteAutomation({{ a.id }})"
                     class="px-3 py-1.5 text-xs rounded-lg border border-red-300 text-red-600
                            hover:bg-red-50 transition-colors font-medium">
@@ -303,5 +308,104 @@ document.getElementById('nl-input').addEventListener('keydown', function(e) {
   }
 });
 
+// ── Edit modal ──────────────────────────────────────────────────────────────
+let _editId = null;
+
+function openEditModal(id, name, description) {
+  _editId = id;
+  document.getElementById('edit-name').value = name;
+  document.getElementById('edit-description').value = description;
+  document.getElementById('edit-error').classList.add('hidden');
+  document.getElementById('edit-loading').classList.add('hidden');
+  document.getElementById('edit-modal').classList.remove('hidden');
+}
+
+function closeEditModal() {
+  document.getElementById('edit-modal').classList.add('hidden');
+  _editId = null;
+}
+
+async function saveEdit() {
+  if (!_editId) return;
+  const name = document.getElementById('edit-name').value.trim();
+  const description = document.getElementById('edit-description').value.trim();
+  const errEl = document.getElementById('edit-error');
+  const loadEl = document.getElementById('edit-loading');
+  const saveBtn = document.getElementById('edit-save-btn');
+
+  if (!description) {
+    errEl.textContent = 'Description is required.';
+    errEl.classList.remove('hidden');
+    return;
+  }
+
+  saveBtn.disabled = true;
+  errEl.classList.add('hidden');
+  loadEl.classList.remove('hidden');
+
+  try {
+    const res = await fetch(`/api/automations/${_editId}/edit`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, nl_description: description}),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errEl.textContent = data.detail || 'Failed to save changes.';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    window.location.reload();
+  } catch(e) {
+    errEl.textContent = 'Network error. Please try again.';
+    errEl.classList.remove('hidden');
+  } finally {
+    saveBtn.disabled = false;
+    loadEl.classList.add('hidden');
+  }
+}
+
+// Close modal on backdrop click
+document.getElementById('edit-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeEditModal();
+});
 </script>
+
+<!-- Edit Modal -->
+<div id="edit-modal" class="hidden fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+  <div class="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden">
+    <div class="px-6 py-4 border-b flex items-center justify-between">
+      <h3 class="text-sm font-semibold text-gray-800">Edit Automation</h3>
+      <button onclick="closeEditModal()" class="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
+    </div>
+    <div class="px-6 py-5 space-y-4">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Name <span class="text-gray-400 font-normal">(optional — leave blank to auto-generate from description)</span></label>
+        <input id="edit-name" type="text"
+               class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm
+                      focus:outline-none focus:ring-2 focus:ring-blue-500"
+               placeholder="Automation name">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Description <span class="text-gray-400 font-normal">(will be re-parsed by AI)</span></label>
+        <textarea id="edit-description" rows="10"
+                  class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm resize-y
+                         focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"></textarea>
+      </div>
+      <p id="edit-error" class="hidden text-xs text-red-600"></p>
+      <p id="edit-loading" class="hidden text-xs text-gray-500">Re-parsing with AI…</p>
+    </div>
+    <div class="px-6 py-4 border-t flex justify-end gap-3">
+      <button onclick="closeEditModal()"
+              class="px-4 py-2 text-sm rounded-xl border border-gray-300 text-gray-600 hover:bg-gray-50">
+        Cancel
+      </button>
+      <button id="edit-save-btn" onclick="saveEdit()"
+              class="px-4 py-2 text-sm rounded-xl bg-blue-600 text-white font-medium hover:bg-blue-700">
+        Save &amp; Re-parse
+      </button>
+    </div>
+  </div>
+</div>
+
 {% endblock %}

@@ -106,6 +106,7 @@ async def create_automation(
 
     automation = Automation(
         name=parsed["name"],
+        raw_description=nl_description,
         trigger_type=parsed["trigger_type"],
         trigger_config_json=json.dumps(parsed["trigger_config"]),
         action_prompt=parsed["action_prompt"],
@@ -144,6 +145,56 @@ async def update_automation(
         automation.model = payload["model"].strip() or "gpt-4o-mini"
     await db.commit()
     return {"id": automation.id, "model": automation.model}
+
+
+@router.post("/api/automations/{automation_id}/edit")
+async def edit_automation(
+    automation_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_user),
+):
+    """Re-parse an automation from an updated name and/or description."""
+    automation = await db.get(Automation, automation_id)
+    if automation is None:
+        raise HTTPException(status_code=404, detail="Automation not found")
+
+    new_name: str = payload.get("name", "").strip()
+    new_description: str = payload.get("nl_description", "").strip()
+
+    if not new_description:
+        raise HTTPException(status_code=422, detail="nl_description is required")
+
+    try:
+        parsed = await parse_automation(new_description, db=db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Error re-parsing automation: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to parse automation description")
+
+    # Use manually provided name if given, otherwise use parser's name
+    automation.name = new_name if new_name else parsed["name"]
+    automation.raw_description = new_description
+    automation.trigger_type = parsed["trigger_type"]
+    automation.trigger_config_json = json.dumps(parsed["trigger_config"])
+    automation.action_prompt = parsed["action_prompt"]
+
+    await db.commit()
+
+    # Re-register the trigger with new config
+    unregister_automation(automation_id)
+    await db.refresh(automation)
+    await register_new_automation(automation)
+
+    return {
+        "id": automation.id,
+        "name": automation.name,
+        "trigger_type": automation.trigger_type,
+        "trigger_config": parsed["trigger_config"],
+        "action_prompt": automation.action_prompt,
+        "enabled": automation.enabled,
+    }
 
 
 @router.post("/api/automations/{automation_id}/enable")

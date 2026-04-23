@@ -118,16 +118,25 @@ async def _handle_incoming(body: dict) -> None:
     sender_id: str = sender_data.get("sender", "")
     sender_name: str = sender_data.get("senderName", "")
 
-    # DEBUG: log raw messageData keys so we can see exact Green API format
-    logger.info("WA_DEBUG messageData keys: %s | typeMessage: %s", list(message_data.keys()), message_data.get("typeMessage", ""))
+    # Green API uses two layouts:
+    # 1. Old: messageData.imageMessage / videoMessage / documentMessage / locationMessage
+    # 2. New: messageData.typeMessage = "imageMessage" + messageData.fileMessageData / locationMessageData
+    _type_msg = message_data.get("typeMessage", "")
+    _file_data = message_data.get("fileMessageData") or {}
 
-    # Green API wraps media inside messageData.fileMessageData or messageData.imageMessage etc.
-    # Support both naming conventions.
-    _img = message_data.get("imageMessage") or message_data.get("imageMessageData") or {}
-    _vid = message_data.get("videoMessage") or message_data.get("videoMessageData") or {}
-    _doc = message_data.get("documentMessage") or message_data.get("documentMessageData") or {}
-    _loc = message_data.get("locationMessage") or message_data.get("locationMessageData") or {}
-    _live = message_data.get("liveLocationMessage") or message_data.get("liveLocationMessageData") or {}
+    _img = (message_data.get("imageMessage") or message_data.get("imageMessageData")
+            or (_file_data if _type_msg == "imageMessage" else {}))
+    _vid = (message_data.get("videoMessage") or message_data.get("videoMessageData")
+            or (_file_data if _type_msg == "videoMessage" else {}))
+    _doc = (message_data.get("documentMessage") or message_data.get("documentMessageData")
+            or (_file_data if _type_msg == "documentMessage" else {}))
+    _aud = (message_data.get("audioMessage") or message_data.get("voiceMessage")
+            or message_data.get("audioMessageData") or message_data.get("voiceMessageData")
+            or (_file_data if _type_msg in ("audioMessage", "voiceMessage") else {}))
+    _loc = (message_data.get("locationMessage") or message_data.get("locationMessageData")
+            or (message_data.get("locationMessageData") if _type_msg == "locationMessage" else {}))
+    _live = (message_data.get("liveLocationMessage") or message_data.get("liveLocationMessageData")
+             or (message_data.get("liveLocationMessageData") if _type_msg == "liveLocationMessage" else {}))
 
     text: str = (
         message_data.get("textMessageData", {}).get("textMessage", "")
@@ -159,6 +168,8 @@ async def _handle_incoming(body: dict) -> None:
         text = "[IMAGE SENT] (no caption)"
     elif not text and _vid:
         text = "[VIDEO SENT] (no caption)"
+    elif not text and _aud:
+        text = "[AUDIO/VOICE MESSAGE SENT]"
     elif not text and _doc:
         fname = _doc.get("fileName", "")
         text = f"[DOCUMENT SENT] {fname}".strip()
@@ -284,15 +295,20 @@ async def _store_message(body: dict, direction: str) -> None:
 
 
 def _detect_message_type(message_data: dict) -> str:
-    if any(k in message_data for k in ("locationMessage", "liveLocationMessage", "locationMessageData", "liveLocationMessageData")):
+    t = message_data.get("typeMessage", "")
+    if t in ("locationMessage", "liveLocationMessage") or any(
+        k in message_data for k in ("locationMessage", "liveLocationMessage", "locationMessageData", "liveLocationMessageData")
+    ):
         return "location"
-    if any(k in message_data for k in ("imageMessage", "imageMessageData")):
+    if t == "imageMessage" or any(k in message_data for k in ("imageMessage", "imageMessageData")):
         return "image"
-    if any(k in message_data for k in ("videoMessage", "videoMessageData")):
+    if t == "videoMessage" or any(k in message_data for k in ("videoMessage", "videoMessageData")):
         return "video"
-    if any(k in message_data for k in ("documentMessage", "documentMessageData")):
+    if t == "documentMessage" or any(k in message_data for k in ("documentMessage", "documentMessageData")):
         return "document"
-    if any(k in message_data for k in ("audioMessage", "voiceMessage", "audioMessageData", "voiceMessageData")):
+    if t in ("audioMessage", "voiceMessage") or any(
+        k in message_data for k in ("audioMessage", "voiceMessage", "audioMessageData", "voiceMessageData")
+    ):
         return "audio"
     return "text"
 

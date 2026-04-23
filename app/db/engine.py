@@ -81,6 +81,11 @@ async def init_db() -> None:
             try:
                 await conn.execute(text("ALTER TABLE automations ADD COLUMN raw_description TEXT"))
             except Exception:
+                pass
+        else:
+            try:
+                await conn.execute(text("ALTER TABLE automations ADD COLUMN IF NOT EXISTS raw_description TEXT"))
+            except Exception:
                 pass  # column already exists
 
     # Set busy_timeout on every future async connection via pool checkout event.

@@ -92,6 +92,7 @@ async def create_automation(
     _user: User = Depends(require_user),
 ):
     nl_description: str = payload.get("nl_description", "").strip()
+    custom_name: str = payload.get("name", "").strip()
     model: str = payload.get("model", "gpt-4o-mini").strip() or "gpt-4o-mini"
     if not nl_description:
         raise HTTPException(status_code=422, detail="nl_description is required")
@@ -105,7 +106,7 @@ async def create_automation(
         raise HTTPException(status_code=500, detail="Failed to parse automation description")
 
     automation = Automation(
-        name=parsed["name"],
+        name=custom_name if custom_name else parsed["name"],
         raw_description=nl_description,
         trigger_type=parsed["trigger_type"],
         trigger_config_json=json.dumps(parsed["trigger_config"]),

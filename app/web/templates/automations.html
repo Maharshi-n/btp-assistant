@@ -31,6 +31,12 @@
         <h2 class="text-sm font-semibold text-gray-700">New Automation</h2>
       </div>
       <div class="px-6 py-5">
+        <div class="mb-3">
+          <input id="create-name" type="text"
+                 placeholder="Name (optional — auto-generated from description)"
+                 class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm
+                        focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </div>
         <div class="flex gap-3">
           <textarea id="nl-input" rows="3"
                     placeholder="Describe your automation..."
@@ -205,6 +211,7 @@ async function createAutomation() {
   const loadEl = document.getElementById('create-loading');
 
   const nl = input.value.trim();
+  const name = document.getElementById('create-name').value.trim();
   if (!nl) return;
 
   btn.disabled = true;
@@ -215,7 +222,7 @@ async function createAutomation() {
     const res = await fetch('/api/automations', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({nl_description: nl, model: document.getElementById('model-select').value}),
+      body: JSON.stringify({nl_description: nl, name, model: document.getElementById('model-select').value}),
     });
     const data = await res.json();
     if (!res.ok) {

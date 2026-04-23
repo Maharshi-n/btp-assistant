@@ -163,11 +163,24 @@ MCP tools default to `ask` when first discovered.
 
 ## Automation system
 
-- Triggers: `cron`, `gmail_any_new`, `gmail_new_from_sender`, `gmail_keyword_match`, `fs_new_in_folder`
+- Triggers: `cron`, `gmail_any_new`, `gmail_new_from_sender`, `gmail_keyword_match`, `fs_new_in_folder`, `whatsapp_group_new`, `whatsapp_keyword_match`, `whatsapp_smart_reply`, `whatsapp_outgoing_new`
 - User describes automation in natural language → `parser.py` (OpenAI structured output) converts to spec
 - `runtime.py` runs triggers via APScheduler
 - Telegram integration: `telegram_send` (one-way notify) vs `telegram_ask` (bidirectional, waits for user reply)
 - Multi-round conversations tracked in `AutomationConversation` table with `conversation_id`
+
+### Critical: Automation context model (stateless per-fire)
+
+Each automation fire creates a **brand new Thread** with **zero memory** of previous fires or previous messages. The LLM only sees:
+- The `action_prompt` (the automation description)
+- The trigger context for that single fire (e.g. one WhatsApp message, one email, one new file)
+
+**Implications:**
+- `whatsapp_group_new` automations only see the single message that triggered them — NOT the full group chat history
+- Cron automations have no memory of previous runs — they must read external state (log files, DB) to know what happened before
+- For daily summaries or cross-message aggregation, the pattern is: per-message automations write to a log file → cron automation reads that log file at summary time
+- "Did someone stop sharing location?" is NOT detectable — RAION only sees location message events (when sharing starts/is sent), not absence of messages
+- Per-message classification (opening reading, closing reading, admission, leave) works perfectly because each message is self-contained
 
 ---
 

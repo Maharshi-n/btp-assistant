@@ -236,6 +236,28 @@ def write_file(
 
 
 @tool
+def clear_file(
+    path: Annotated[str, "Path to the file to clear (relative to workspace or absolute)"],
+) -> str:
+    """Clear all contents of a file, leaving it empty. Creates the file if it does not exist.
+
+    Use this when you need to reset a file to empty — for example clearing a daily log
+    at the end of the day. More reliable than write_file with empty content.
+    """
+    try:
+        resolved = _safe_resolve(path, require_writable=True)
+    except OutsideWorkspaceError as e:
+        return str(e)
+
+    try:
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        resolved.write_text("", encoding="utf-8")
+        return f"Cleared '{path}'."
+    except OSError as e:
+        return f"Error clearing file: {e}"
+
+
+@tool
 def list_dir(path: Annotated[str, "Directory path to list (relative to workspace or absolute, default '.')"] = ".") -> str:
     """List the files and directories inside a workspace directory."""
     try:

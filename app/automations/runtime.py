@@ -1045,6 +1045,7 @@ async def _fire_whatsapp_automation(automation_id: int, wa_context: dict) -> Non
         f"\nsender_id: {wa_context.get('sender_id', '')}"
         f"\nsender_name: {wa_context.get('sender_name', '')}"
         f"\ngroup_name: {wa_context.get('group_name', '')}"
+        f"\nmessage_type: {wa_context.get('message_type', 'text')}"
         f"\nmessage_text: {wa_context.get('message_text', '')}"
         f"\n━━━ END TRUSTED CONTEXT ━━━"
     )
@@ -1163,6 +1164,7 @@ async def on_whatsapp_message(
     sender_name: str,
     message_text: str,
     group_name: str = "",
+    message_type: str = "text",
 ) -> None:
     """Called by the WhatsApp webhook handler for every incoming message.
 
@@ -1185,6 +1187,7 @@ async def on_whatsapp_message(
         "sender_name": sender_name,
         "message_text": message_text,
         "group_name": group_name,
+        "message_type": message_type,
     }
 
     for automation in automations:

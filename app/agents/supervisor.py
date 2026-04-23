@@ -59,7 +59,7 @@ from langgraph.types import Command, interrupt
 
 import app.config as app_config
 from app.permissions.policy import get_decision, human_readable_prompt
-from app.tools.filesystem import copy_file, create_folder, delete_file, find_file, list_dir, move_file, read_file, write_file
+from app.tools.filesystem import clear_file, copy_file, create_folder, delete_file, find_file, list_dir, move_file, read_file, write_file
 from app.tools.google_tools import GOOGLE_TOOLS
 from app.tools.shell import run_shell_command
 from app.tools.web import web_fetch, web_search
@@ -139,6 +139,7 @@ class AgentState(TypedDict):
 WORKER_TOOLS = [
     read_file,
     write_file,
+    clear_file,
     copy_file,
     move_file,
     create_folder,
@@ -278,7 +279,7 @@ Do not say "I can help with that" — just do it.
 When a task is done, give a short, direct summary of what you did.
 
 ━━━ TOOLS AVAILABLE ━━━
-Filesystem : read_file, write_file, copy_file, move_file, create_folder, find_file, list_dir, delete_file  (workspace-scoped)
+Filesystem : read_file, write_file, clear_file, copy_file, move_file, create_folder, find_file, list_dir, delete_file  (workspace-scoped)
            copy_file/move_file preserve binary content — use these for images, PDFs, and any non-text files
 Shell      : run_shell_command  (any command — ask before destructive actions like rm, drop db, force push, kill)
            For installing software: try winget first: winget install <AppName>
@@ -1158,6 +1159,7 @@ def spawn_workers_tool(tasks: list[WorkerTask]) -> str:
 SUPERVISOR_TOOLS = [
     read_file,
     write_file,
+    clear_file,
     copy_file,
     move_file,
     create_folder,

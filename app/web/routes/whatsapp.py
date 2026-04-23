@@ -133,6 +133,27 @@ async def _handle_incoming(body: dict) -> None:
         or ""
     )
 
+    # Enrich text with structured markers for non-text message types so automations
+    # can act on them semantically without needing to parse raw JSON.
+    if "locationMessage" in message_data:
+        loc = message_data["locationMessage"]
+        lat = loc.get("latitude", "")
+        lng = loc.get("longitude", "")
+        loc_name = loc.get("nameLocation", "") or loc.get("address", "")
+        text = f"[LOCATION SHARED] {loc_name} lat={lat} lng={lng}".strip()
+    elif "liveLocationMessage" in message_data:
+        loc = message_data["liveLocationMessage"]
+        lat = loc.get("latitude", "")
+        lng = loc.get("longitude", "")
+        text = f"[LIVE LOCATION SHARED] lat={lat} lng={lng}"
+    elif not text and "imageMessage" in message_data:
+        text = "[IMAGE SENT] (no caption)"
+    elif not text and "videoMessage" in message_data:
+        text = "[VIDEO SENT] (no caption)"
+    elif not text and "documentMessage" in message_data:
+        fname = message_data["documentMessage"].get("fileName", "")
+        text = f"[DOCUMENT SENT] {fname}".strip()
+
     # Deduplicate
     async with AsyncSessionLocal() as db:
         existing = await db.execute(
@@ -204,6 +225,7 @@ async def _handle_incoming(body: dict) -> None:
                 sender_name=sender_name,
                 message_text=text,
                 group_name=group.name if group else "",
+                message_type=_detect_message_type(message_data),
             )
         )
     except Exception as exc:
@@ -253,6 +275,8 @@ async def _store_message(body: dict, direction: str) -> None:
 
 
 def _detect_message_type(message_data: dict) -> str:
+    if "locationMessage" in message_data or "liveLocationMessage" in message_data:
+        return "location"
     if "imageMessage" in message_data:
         return "image"
     if "videoMessage" in message_data:

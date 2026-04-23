@@ -171,9 +171,11 @@
               Enable
             </button>
             {% endif %}
-            <button onclick="openEditModal({{ a.id }}, {{ a.name|tojson }}, {{ (a.raw_description or a.action_prompt)|tojson }})"
-                    class="px-3 py-1.5 text-xs rounded-lg border border-blue-300 text-blue-600
-                           hover:bg-blue-50 transition-colors font-medium">
+            <button class="edit-btn px-3 py-1.5 text-xs rounded-lg border border-blue-300 text-blue-600
+                           hover:bg-blue-50 transition-colors font-medium"
+                    data-id="{{ a.id }}"
+                    data-name="{{ a.name | e }}"
+                    data-desc="{{ (a.raw_description or a.action_prompt) | e }}">
               Edit
             </button>
             <button onclick="deleteAutomation({{ a.id }})"
@@ -313,6 +315,17 @@ document.getElementById('nl-input').addEventListener('keydown', function(e) {
     e.preventDefault();
     createAutomation();
   }
+});
+
+// Edit buttons — use delegation so data-* attributes are read safely
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.edit-btn');
+  if (!btn) return;
+  openEditModal(
+    btn.dataset.id,
+    btn.dataset.name,
+    btn.dataset.desc
+  );
 });
 
 // ── Edit modal ──────────────────────────────────────────────────────────────

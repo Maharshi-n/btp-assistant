@@ -63,11 +63,11 @@ _runtime_started: bool = False
 # WhatsApp debounce — 15-second window per (chat_id, sender_id)
 # ---------------------------------------------------------------------------
 
-# (chat_id, sender_id) → asyncio.TimerHandle
-_wa_debounce_timers: dict[tuple[str, str], asyncio.TimerHandle] = {}
+# chat_id → asyncio.TimerHandle
+_wa_debounce_timers: dict[str, asyncio.TimerHandle] = {}
 
-# (chat_id, sender_id) → list of wa_context dicts (one per message in window)
-_wa_debounce_buffer: dict[tuple[str, str], list[dict]] = {}
+# chat_id → list of wa_context dicts (one per message in window)
+_wa_debounce_buffer: dict[str, list[dict]] = {}
 
 _WA_DEBOUNCE_SECONDS = 15
 _WA_HISTORY_COUNT = 15  # messages of recent chat history to fetch for context
@@ -1208,20 +1208,20 @@ async def _fetch_recent_chat_history(chat_id: str) -> str:
         return ""
 
 
-async def _flush_wa_debounce(key: tuple[str, str]) -> None:
+async def _flush_wa_debounce(chat_id: str) -> None:
     """Called after debounce window expires. Fires automations with all buffered messages."""
-    buffered = _wa_debounce_buffer.pop(key, [])
-    _wa_debounce_timers.pop(key, None)
+    buffered = _wa_debounce_buffer.pop(chat_id, [])
+    _wa_debounce_timers.pop(chat_id, None)
 
     if not buffered:
         return
 
-    chat_id, sender_id = key
-    # Use the last message's context as the base; combine all texts
+    # Use the last message's context as the base; combine all texts with sender attribution
     base = buffered[-1].copy()
     if len(buffered) > 1:
         combined_texts = "\n".join(
-            f"[msg {i+1}] {m['message_text']}" for i, m in enumerate(buffered)
+            f"[msg {i+1} from {m['sender_name'] or m['sender_id']}] {m['message_text']}"
+            for i, m in enumerate(buffered)
         )
         base["message_text"] = combined_texts
         # Use the most severe message_type seen (image/video/audio/document > text)
@@ -1262,11 +1262,10 @@ async def on_whatsapp_message(
         "message_type": message_type,
     }
 
-    key = (chat_id, sender_id)
-    _wa_debounce_buffer.setdefault(key, []).append(wa_context)
+    _wa_debounce_buffer.setdefault(chat_id, []).append(wa_context)
 
     # Cancel existing timer if any
-    existing = _wa_debounce_timers.pop(key, None)
+    existing = _wa_debounce_timers.pop(chat_id, None)
     if existing:
         existing.cancel()
 
@@ -1274,9 +1273,9 @@ async def on_whatsapp_message(
     loop = asyncio.get_running_loop()
     handle = loop.call_later(
         _WA_DEBOUNCE_SECONDS,
-        lambda: asyncio.create_task(_flush_wa_debounce(key)),
+        lambda: asyncio.create_task(_flush_wa_debounce(chat_id)),
     )
-    _wa_debounce_timers[key] = handle
+    _wa_debounce_timers[chat_id] = handle
 
 
 async def on_whatsapp_message_fire(wa_context: dict) -> None:

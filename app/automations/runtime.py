@@ -830,14 +830,17 @@ async def _wa_poll_group(chat_id: str, group_name: str, registered_at_unix: floa
             sender_name: str = m.get("senderName", "") or ""
             sender_id: str = m.get("senderId", "") or ""
 
-            # Parse text from typeMessage field
+            # Parse text and media_url from typeMessage field
             type_msg = m.get("typeMessage", "")
+            media_url_poll = ""
             if type_msg == "textMessage":
                 text = m.get("textMessage", "") or ""
             elif type_msg == "extendedTextMessage":
                 text = (m.get("extendedTextMessage", {}) or {}).get("text", "") or m.get("textMessage", "") or ""
             elif type_msg in ("imageMessage", "videoMessage", "documentMessage"):
-                text = (m.get(type_msg, {}) or {}).get("caption", "") or f"[{type_msg.replace('Message', '')}]"
+                msg_sub = m.get(type_msg, {}) or {}
+                text = msg_sub.get("caption", "") or f"[{type_msg.replace('Message', '')}]"
+                media_url_poll = msg_sub.get("downloadUrl", "")
             elif type_msg == "audioMessage":
                 text = "[audio]"
             elif type_msg == "stickerMessage":
@@ -845,13 +848,26 @@ async def _wa_poll_group(chat_id: str, group_name: str, registered_at_unix: floa
             else:
                 text = f"[{type_msg}]" if type_msg else ""
 
+            # Map Green API typeMessage to our message_type string
+            _type_map = {
+                "imageMessage": "image",
+                "videoMessage": "video",
+                "documentMessage": "document",
+                "audioMessage": "audio",
+                "voiceMessage": "audio",
+                "locationMessage": "location",
+                "liveLocationMessage": "location",
+            }
+            mapped_type = _type_map.get(type_msg, "text")
+
             new_messages.append({
                 "msg_id": msg_id,
                 "direction": direction,
                 "sender_id": sender_id,
                 "sender_name": sender_name or None,
                 "text": text or None,
-                "type_msg": type_msg or "text",
+                "type_msg": mapped_type,
+                "media_url": media_url_poll,
             })
 
         if not new_messages:
@@ -883,6 +899,7 @@ async def _wa_poll_group(chat_id: str, group_name: str, registered_at_unix: floa
                     direction=m["direction"],
                     message_type=m["type_msg"],
                     text=m["text"],
+                    media_url=m.get("media_url") or None,
                 ))
                 seen.add(m["msg_id"])
 
@@ -902,6 +919,8 @@ async def _wa_poll_group(chat_id: str, group_name: str, registered_at_unix: floa
                         sender_name=m["sender_name"] or "",
                         message_text=m["text"] or "",
                         group_name=group_name,
+                        message_type=m["type_msg"],
+                        media_url=m.get("media_url") or "",
                     )
                 )
             elif m["direction"] == "outgoing" and m["sender_id"] not in ("agent", "RAION"):

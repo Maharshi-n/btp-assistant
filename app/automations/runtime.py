@@ -195,7 +195,8 @@ async def _fire_automation(automation_id: int, trigger_context: dict | None = No
                     "[AUTOMATION RUN — execute immediately, no questions. "
                     "You MUST call tools as instructed. Do NOT just reply with text — "
                     "if the action says call telegram_send or whatsapp_send, you MUST call it as a tool. "
-                    f"This run's thread_id is {thread.id} — include it in Telegram notifications as 'Thread: #{thread.id}']\n\n"
+                    f"This run's thread_id is {thread.id} — include it ONLY in Telegram notifications as 'Thread: #{thread.id}'. "
+                    "NEVER mention thread_id, Thread #, or any internal system info in WhatsApp group replies.]\n\n"
                     + automation.action_prompt
                     + trusted
                 )

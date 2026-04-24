@@ -922,6 +922,7 @@ async def _wa_poll_group(chat_id: str, group_name: str, registered_at_unix: floa
                         group_name=group_name,
                         message_type=m["type_msg"],
                         media_url=m.get("media_url") or "",
+                        message_id=m["msg_id"],
                     )
                 )
             elif m["direction"] == "outgoing" and m["sender_id"] not in ("agent", "RAION"):
@@ -1070,30 +1071,33 @@ async def stop_automations_runtime() -> None:
 # WhatsApp automation dispatch (webhook-driven)
 # ---------------------------------------------------------------------------
 
-async def _describe_whatsapp_image(media_url: str) -> str:
-    """Call GPT-4o vision to describe an image from a Green API download URL.
+async def _describe_whatsapp_image(chat_id: str, message_id: str) -> str:
+    """Download a WhatsApp image via Green API and describe it with GPT-4o vision.
 
     Returns a plain-text description, or empty string on any error.
     """
-    if not media_url:
+    if not chat_id or not message_id:
         return ""
     try:
-        import httpx as _httpx
-        from openai import AsyncOpenAI
         import base64 as _b64
+        from openai import AsyncOpenAI
+        from app.integrations.green_api import get_green_client
 
-        # Fetch the image bytes from Green API
-        async with _httpx.AsyncClient(timeout=30) as hc:
-            resp = await hc.get(media_url)
-            resp.raise_for_status()
-            image_bytes = resp.content
-            content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+        client_wa = get_green_client()
+        if client_wa is None:
+            logger.warning("_describe_whatsapp_image: WhatsApp client not configured")
+            return ""
+
+        image_bytes, content_type = await client_wa.download_file(chat_id, message_id)
+        if not image_bytes:
+            logger.warning("_describe_whatsapp_image: empty response for message_id=%s", message_id)
+            return ""
 
         b64_data = _b64.b64encode(image_bytes).decode()
         data_url = f"data:{content_type};base64,{b64_data}"
 
-        client = AsyncOpenAI(api_key=app_config.OPENAI_API_KEY)
-        response = await client.chat.completions.create(
+        client_ai = AsyncOpenAI(api_key=app_config.OPENAI_API_KEY)
+        response = await client_ai.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {
@@ -1132,11 +1136,12 @@ async def _fire_whatsapp_automation(automation_id: int, wa_context: dict) -> Non
 
     # If the message is an image, describe it with GPT-4o vision first
     image_block = ""
-    media_url = wa_context.get("media_url", "")
     msg_type = wa_context.get("message_type", "text")
-    logger.info("WA image check: message_type=%r media_url=%r", msg_type, media_url[:60] if media_url else "")
-    if media_url and msg_type == "image":
-        description = await _describe_whatsapp_image(media_url)
+    chat_id_ctx = wa_context.get("chat_id", "")
+    message_id_ctx = wa_context.get("message_id", "")
+    logger.info("WA image check: message_type=%r chat_id=%r message_id=%r", msg_type, chat_id_ctx, message_id_ctx)
+    if msg_type == "image" and chat_id_ctx and message_id_ctx:
+        description = await _describe_whatsapp_image(chat_id_ctx, message_id_ctx)
         logger.info("WA image description result: %r", description[:100] if description else "(empty)")
         if description:
             image_block = f"\n\nImage description (analyzed by vision model):\n{description}"
@@ -1318,10 +1323,11 @@ async def _flush_wa_debounce(chat_id: str) -> None:
             (m["message_type"] for m in buffered),
             key=lambda t: type_priority.get(t, 0),
         )
-        # Carry media_url from the first image message in the batch (if any)
-        image_msg = next((m for m in buffered if m.get("message_type") == "image" and m.get("media_url")), None)
+        # Carry message_id and media_url from the first image message in the batch (if any)
+        image_msg = next((m for m in buffered if m.get("message_type") == "image" and m.get("message_id")), None)
         if image_msg:
-            base["media_url"] = image_msg["media_url"]
+            base["media_url"] = image_msg.get("media_url", "")
+            base["message_id"] = image_msg["message_id"]
 
     # Fetch recent chat history for LLM context
     history = await _fetch_recent_chat_history(chat_id)
@@ -1339,6 +1345,7 @@ async def on_whatsapp_message(
     group_name: str = "",
     message_type: str = "text",
     media_url: str = "",
+    message_id: str = "",
 ) -> None:
     """Called by the WhatsApp webhook handler for every incoming message.
 
@@ -1354,6 +1361,7 @@ async def on_whatsapp_message(
         "group_name": group_name,
         "message_type": message_type,
         "media_url": media_url,
+        "message_id": message_id,
     }
 
     _wa_debounce_buffer.setdefault(chat_id, []).append(wa_context)

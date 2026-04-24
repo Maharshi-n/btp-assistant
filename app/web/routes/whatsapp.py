@@ -247,6 +247,7 @@ async def _handle_incoming(body: dict) -> None:
                 group_name=group.name if group else "",
                 message_type=_detect_message_type(message_data),
                 media_url=media_url or "",
+                message_id=message_id,
             )
         )
     except Exception as exc:

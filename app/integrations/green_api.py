@@ -124,6 +124,19 @@ class GreenAPIClient:
                 raise GreenAPIError(0, str(exc)) from exc
         raise GreenAPIError(0, "unreachable")
 
+    async def download_file(self, chat_id: str, message_id: str) -> tuple[bytes, str]:
+        """Download media bytes for a message using Green API's downloadFile endpoint.
+
+        Returns (bytes, content_type). Raises GreenAPIError on failure.
+        """
+        url = self._url("downloadFile")
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, json={"chatId": chat_id, "idMessage": message_id})
+        if resp.status_code >= 400:
+            raise GreenAPIError(resp.status_code, resp.text)
+        content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+        return resp.content, content_type
+
     async def get_chat_history(self, chat_id: str, count: int = 50) -> list[dict]:
         result = await self._post("getChatHistory", {"chatId": chat_id, "count": count})
         return result if isinstance(result, list) else []

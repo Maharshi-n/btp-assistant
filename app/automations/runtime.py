@@ -1050,10 +1050,74 @@ async def stop_automations_runtime() -> None:
 # WhatsApp automation dispatch (webhook-driven)
 # ---------------------------------------------------------------------------
 
+async def _describe_whatsapp_image(media_url: str) -> str:
+    """Call GPT-4o vision to describe an image from a Green API download URL.
+
+    Returns a plain-text description, or empty string on any error.
+    """
+    if not media_url:
+        return ""
+    try:
+        import httpx as _httpx
+        from openai import AsyncOpenAI
+        import base64 as _b64
+
+        # Fetch the image bytes from Green API
+        async with _httpx.AsyncClient(timeout=30) as hc:
+            resp = await hc.get(media_url)
+            resp.raise_for_status()
+            image_bytes = resp.content
+            content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+
+        b64_data = _b64.b64encode(image_bytes).decode()
+        data_url = f"data:{content_type};base64,{b64_data}"
+
+        client = AsyncOpenAI(api_key=app_config.OPENAI_API_KEY)
+        response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "You are analyzing an image sent on WhatsApp in a school admission campaigning context. "
+                                "Describe what you see clearly and concisely. "
+                                "If it is an admission form, form template, proof of campaigning work, or any school-related document, say so explicitly. "
+                                "Include any visible text, names, numbers, or important details."
+                            ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": data_url, "detail": "high"},
+                        },
+                    ],
+                }
+            ],
+            max_tokens=400,
+        )
+        description = response.choices[0].message.content or ""
+        logger.info("WA image described (%d chars)", len(description))
+        return description.strip()
+    except Exception as exc:
+        logger.warning("_describe_whatsapp_image failed: %s", exc)
+        return ""
+
+
 async def _fire_whatsapp_automation(automation_id: int, wa_context: dict) -> None:
     """Fire a WhatsApp-triggered automation with the incoming message context."""
     history = wa_context.get("recent_history", "")
     history_block = f"\n\nRecent chat history (last {_WA_HISTORY_COUNT} messages, oldest first):\n{history}" if history else ""
+
+    # If the message is an image, describe it with GPT-4o vision first
+    image_block = ""
+    media_url = wa_context.get("media_url", "")
+    if media_url and wa_context.get("message_type", "text") == "image":
+        description = await _describe_whatsapp_image(media_url)
+        if description:
+            image_block = f"\n\nImage description (analyzed by vision model):\n{description}"
+
     trusted_block = (
         f"\n\n━━━ TRUSTED TRIGGER CONTEXT ━━━"
         f"\nchat_id: {wa_context.get('chat_id', '')}"
@@ -1062,6 +1126,7 @@ async def _fire_whatsapp_automation(automation_id: int, wa_context: dict) -> Non
         f"\ngroup_name: {wa_context.get('group_name', '')}"
         f"\nmessage_type: {wa_context.get('message_type', 'text')}"
         f"\nmessage_text: {wa_context.get('message_text', '')}"
+        f"{image_block}"
         f"{history_block}"
         f"\n━━━ END TRUSTED CONTEXT ━━━"
     )
@@ -1230,6 +1295,10 @@ async def _flush_wa_debounce(chat_id: str) -> None:
             (m["message_type"] for m in buffered),
             key=lambda t: type_priority.get(t, 0),
         )
+        # Carry media_url from the first image message in the batch (if any)
+        image_msg = next((m for m in buffered if m.get("message_type") == "image" and m.get("media_url")), None)
+        if image_msg:
+            base["media_url"] = image_msg["media_url"]
 
     # Fetch recent chat history for LLM context
     history = await _fetch_recent_chat_history(chat_id)
@@ -1246,6 +1315,7 @@ async def on_whatsapp_message(
     message_text: str,
     group_name: str = "",
     message_type: str = "text",
+    media_url: str = "",
 ) -> None:
     """Called by the WhatsApp webhook handler for every incoming message.
 
@@ -1260,6 +1330,7 @@ async def on_whatsapp_message(
         "message_text": message_text,
         "group_name": group_name,
         "message_type": message_type,
+        "media_url": media_url,
     }
 
     _wa_debounce_buffer.setdefault(chat_id, []).append(wa_context)

@@ -36,8 +36,10 @@ app/
     auto_memory.py        — auto-extract facts from conversations
   automations/
     parser.py             — NL → structured automation spec (OpenAI structured output)
-    runtime.py            — automation trigger runtime (APScheduler)
+    runtime.py            — automation trigger runtime (APScheduler + WhatsApp debounce + image vision)
     conversations.py      — multi-round Telegram conversation state machine
+  integrations/
+    green_api.py          — GreenAPIClient: send_message, get_chat_history, download_file, etc.
   mcp/
     manager.py            — MCPManager singleton: connect/disconnect/tool discovery
     loader.py             — TTL-cached tool loader used by the agent
@@ -49,8 +51,11 @@ app/
     web.py                — web_search (DDGS), web_fetch
     google_tools.py       — Gmail, Drive, Calendar LangChain tools
     telegram_tools.py     — telegram_send, telegram_ask, save_draft, schedule_message
+    whatsapp_tools.py     — whatsapp_send tool for agent use
     skills.py             — read_skill tool (injects skill markdown into agent context)
     shell.py              — run_shell_command
+    image.py              — image analysis tools
+    rag.py                — RAG / document retrieval tools
   web/
     deps.py               — require_user FastAPI dependency
     routes/
@@ -60,12 +65,15 @@ app/
       connectors.py       — /connectors, /api/connectors (MCP server CRUD)
       settings.py         — /settings (workspace dir, Telegram, models, Google, password)
       memory.py           — /memory, /api/memory
-      automations.py      — /automations, /api/automations
+      automations.py      — /automations, /api/automations (create/edit/enable/disable/delete)
       skills.py           — /skills, /api/skills
       tasks.py            — /tasks (scheduled tasks)
       audit.py            — /audit (permission audit log)
       telegram.py         — /webhook/telegram (incoming Telegram messages)
+      telegram_commands.py — Telegram slash command handling
       permissions.py      — /api/permissions/{id} (approve/deny tool calls)
+      whatsapp.py         — /whatsapp UI, /webhook/whatsapp, /api/whatsapp/* (groups, send, polling toggle)
+      workspaces.py       — workspace management routes
       health.py           — /health
     templates/
       base.html           — base layout, dark theme CSS overrides, theme toggle JS
@@ -73,9 +81,11 @@ app/
       settings.html       — settings page (workspace, Telegram, models, Google, password)
       connectors.html     — MCP connector management UI
       memory.html         — memory CRUD UI
-      automations.html    — automation CRUD UI
+      automations.html    — automation CRUD UI (create with optional name, edit, enable/disable)
       skills.html         — skills upload/management UI
       audit.html          — audit log UI
+      whatsapp.html       — WhatsApp group management, polling toggle, message history
+      telegram_commands.html — Telegram command management UI
       login.html          — login page
     static/
       tailwind.min.js     — Tailwind CSS CDN (offline copy)
@@ -105,6 +115,10 @@ TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 TELEGRAM_WEBHOOK_URL=        # public HTTPS URL for Telegram webhook (ngrok etc.)
 TELEGRAM_WEBHOOK_SECRET=
+GREEN_API_BASE_URL=          # e.g. https://api.green-api.com
+GREEN_API_INSTANCE_ID=       # Green API instance ID
+GREEN_API_TOKEN=             # Green API instance token
+GREEN_API_WEBHOOK_TOKEN=     # secret token for webhook auth
 ```
 
 ---
@@ -161,6 +175,18 @@ MCP tools default to `ask` when first discovered.
 
 ---
 
+## WhatsApp integration
+
+- Powered by **Green API** (green-api.com) — instance-based WhatsApp gateway
+- Incoming messages arrive via webhook (`/webhook/whatsapp`) OR polling fallback (`_wa_poll_loop`, every 15s)
+- Groups registered in `/whatsapp` UI — each has `enabled`, `keyword_filter`, `auto_send_allowed` flags
+- **15-second debounce** per `chat_id`: rapid multi-message senders are batched into one automation fire
+- **Image vision**: when `message_type=image`, `runtime.py` calls `GreenAPIClient.download_file()` (authenticated), base64-encodes bytes, passes to GPT-4o vision → description injected into trusted context block before automation fires
+- Recent chat history (last 15 messages via `getChatHistory`) appended to every WhatsApp automation fire for context
+- Outgoing messages (sent by agent or phone owner) can trigger `whatsapp_outgoing_new` automations
+
+---
+
 ## Automation system
 
 - Triggers: `cron`, `gmail_any_new`, `gmail_new_from_sender`, `gmail_keyword_match`, `fs_new_in_folder`, `whatsapp_group_new`, `whatsapp_keyword_match`, `whatsapp_smart_reply`, `whatsapp_outgoing_new`
@@ -168,6 +194,7 @@ MCP tools default to `ask` when first discovered.
 - `runtime.py` runs triggers via APScheduler
 - Telegram integration: `telegram_send` (one-way notify) vs `telegram_ask` (bidirectional, waits for user reply)
 - Multi-round conversations tracked in `AutomationConversation` table with `conversation_id`
+- Automation create form supports optional custom name field (falls back to parser-generated name)
 
 ### Critical: Automation context model (stateless per-fire)
 
@@ -176,11 +203,32 @@ Each automation fire creates a **brand new Thread** with **zero memory** of prev
 - The trigger context for that single fire (e.g. one WhatsApp message, one email, one new file)
 
 **Implications:**
-- `whatsapp_group_new` automations only see the single message that triggered them — NOT the full group chat history
+- `whatsapp_group_new` automations receive the last 15 chat history messages + the batched trigger message(s) as context
 - Cron automations have no memory of previous runs — they must read external state (log files, DB) to know what happened before
 - For daily summaries or cross-message aggregation, the pattern is: per-message automations write to a log file → cron automation reads that log file at summary time
 - "Did someone stop sharing location?" is NOT detectable — RAION only sees location message events (when sharing starts/is sent), not absence of messages
 - Per-message classification (opening reading, closing reading, admission, leave) works perfectly because each message is self-contained
+
+### WhatsApp automation trusted context block format
+
+Every WhatsApp automation fire injects this block at the end of the prompt:
+```
+━━━ TRUSTED TRIGGER CONTEXT ━━━
+chat_id: ...
+sender_id: ...
+sender_name: ...
+group_name: ...
+message_type: text|image|video|audio|document|location
+message_text: ...
+
+Image description (analyzed by vision model):   ← only present if message_type=image and vision succeeded
+...
+
+Recent chat history (last 15 messages, oldest first):
+  Name: message
+  ...
+━━━ END TRUSTED CONTEXT ━━━
+```
 
 ---
 
@@ -218,6 +266,8 @@ No build step — Tailwind is the CDN/offline copy. No frontend bundler.
 - Phase 11: Memory (manual + auto-extract)
 - Phase 12: Skills (upload markdown skill files, / autocomplete in chat)
 - Phase 13: Scheduled tasks
+- Phase 14: WhatsApp integration (Green API, group management, webhook + polling, automation triggers)
+  - 15s debounce per chat_id, getChatHistory context, image vision via GPT-4o downloadFile
 
 ---
 

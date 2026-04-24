@@ -1132,8 +1132,11 @@ async def _fire_whatsapp_automation(automation_id: int, wa_context: dict) -> Non
     # If the message is an image, describe it with GPT-4o vision first
     image_block = ""
     media_url = wa_context.get("media_url", "")
-    if media_url and wa_context.get("message_type", "text") == "image":
+    msg_type = wa_context.get("message_type", "text")
+    logger.info("WA image check: message_type=%r media_url=%r", msg_type, media_url[:60] if media_url else "")
+    if media_url and msg_type == "image":
         description = await _describe_whatsapp_image(media_url)
+        logger.info("WA image description result: %r", description[:100] if description else "(empty)")
         if description:
             image_block = f"\n\nImage description (analyzed by vision model):\n{description}"
 

@@ -1319,6 +1319,8 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
     # user input) even if it would otherwise be trimmed out of the window.
     # Losing it causes the "Could you please repeat your last request?" bug
     # because the supervisor has AI/Tool messages but no user ask to answer.
+    # ALSO CRITICAL: never split an AIMessage+ToolMessage pair — if the window
+    # starts mid-pair, walk forward until we're at a clean boundary.
     _WINDOW = 20
     if len(messages) > _WINDOW:
         non_system = [m for m in messages if not isinstance(m, SystemMessage)]
@@ -1327,6 +1329,9 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
             None,
         )
         windowed = non_system[-_WINDOW:]
+        # Walk forward past any leading ToolMessages that lost their AIMessage parent
+        while windowed and isinstance(windowed[0], ToolMessage):
+            windowed = windowed[1:]
         if (
             last_human_idx is not None
             and not any(m is non_system[last_human_idx] for m in windowed)

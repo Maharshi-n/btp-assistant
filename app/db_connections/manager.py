@@ -154,7 +154,13 @@ async def _get_columns_and_samples(conn: DBConnection, table: str) -> tuple[list
                 samples_result = await c.execute(text(f"SELECT TOP 5 * FROM {table}"))
             else:
                 samples_result = await c.execute(text(f"SELECT * FROM {table} LIMIT 5"))
-            samples = [list(row) for row in samples_result.fetchall()]
+            def _serialize(v):
+                if v is None:
+                    return None
+                if isinstance(v, (int, float, bool, str)):
+                    return v
+                return str(v)
+            samples = [[_serialize(v) for v in row] for row in samples_result.fetchall()]
         return columns, samples
     finally:
         await engine.dispose()

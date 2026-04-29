@@ -75,17 +75,18 @@ def build_url(conn: DBConnection) -> str:
 
 async def test_connection(conn: DBConnection) -> tuple[bool, str]:
     """Try connecting; return (success, error_message)."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+    url = build_url(conn)
+    engine = create_async_engine(url, pool_pre_ping=True)
     try:
-        from sqlalchemy.ext.asyncio import create_async_engine
-        url = build_url(conn)
-        engine = create_async_engine(url, pool_pre_ping=True)
         async with engine.connect() as c:
             from sqlalchemy import text
             await c.execute(text("SELECT 1"))
-        await engine.dispose()
         return True, ""
     except Exception as exc:
         return False, str(exc)[:500]
+    finally:
+        await engine.dispose()
 
 
 async def _get_tables(conn: DBConnection) -> list[str]:
@@ -107,9 +108,14 @@ async def _get_tables(conn: DBConnection) -> list[str]:
                     text("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE'")
                 )
                 all_tables = [row[0] for row in result]
-            elif conn.db_type in ("mysql", "postgres"):
+            elif conn.db_type == "mysql":
                 result = await c.execute(
-                    text("SELECT table_name FROM information_schema.tables WHERE table_schema NOT IN ('information_schema','pg_catalog')")
+                    text("SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()")
+                )
+                all_tables = [row[0] for row in result]
+            elif conn.db_type == "postgres":
+                result = await c.execute(
+                    text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
                 )
                 all_tables = [row[0] for row in result]
             else:
@@ -121,6 +127,8 @@ async def _get_tables(conn: DBConnection) -> list[str]:
 
 async def _get_columns_and_samples(conn: DBConnection, table: str) -> tuple[list[dict], list[list]]:
     """Return (columns_info, sample_rows) for a single table."""
+    if not re.match(r'^[A-Za-z0-9_$#]+$', table):
+        raise ValueError(f"Invalid table name: {table!r}")
     from sqlalchemy.ext.asyncio import create_async_engine
     from sqlalchemy import text
     url = build_url(conn)
@@ -142,7 +150,10 @@ async def _get_columns_and_samples(conn: DBConnection, table: str) -> tuple[list
             else:
                 columns = []
 
-            samples_result = await c.execute(text(f"SELECT * FROM {table} LIMIT 5"))
+            if conn.db_type == "mssql":
+                samples_result = await c.execute(text(f"SELECT TOP 5 * FROM {table}"))
+            else:
+                samples_result = await c.execute(text(f"SELECT * FROM {table} LIMIT 5"))
             samples = [list(row) for row in samples_result.fetchall()]
         return columns, samples
     finally:

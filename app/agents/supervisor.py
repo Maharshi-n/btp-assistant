@@ -1479,6 +1479,7 @@ async def policy_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             continue
 
         decision = get_decision(tool_name, tool_args)
+        logger.info("supervisor policy_tools: tool=%s decision=%s", tool_name, decision)
 
         if decision == "ask" and not is_automation:
             request_id = str(uuid.uuid4())
@@ -1538,6 +1539,7 @@ async def policy_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             )
             continue
 
+        logger.info("supervisor policy_tools: EXECUTING tool=%s args=%s", tool_name, str(tool_args)[:120])
         try:
             result = await asyncio.wait_for(
                 t.ainvoke(tool_args, config=config),
@@ -1549,13 +1551,15 @@ async def policy_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             if tool_name.startswith("mcp__playwright__"):
                 _sweep_playwright_artifacts()
             result_str = _annotate_playwright_error(tool_name, result_str)
-            logger.info("supervisor policy_tools: tool=%s result_preview=%s", tool_name, result_str[:120])
+            logger.info("supervisor policy_tools: DONE tool=%s result_preview=%s", tool_name, result_str[:120])
             tool_messages.append(ToolMessage(tool_call_id=tool_call_id, content=result_str))
         except asyncio.TimeoutError:
+            logger.warning("supervisor policy_tools: TIMEOUT tool=%s", tool_name)
             tool_messages.append(
                 ToolMessage(tool_call_id=tool_call_id, content=f"Tool timed out after 120s: {tool_name}")
             )
         except Exception as exc:
+            logger.warning("supervisor policy_tools: ERROR tool=%s exc=%s", tool_name, exc)
             tool_messages.append(
                 ToolMessage(tool_call_id=tool_call_id, content=f"MCP tool error ({tool_name}): {exc}")
             )

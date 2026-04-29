@@ -74,6 +74,7 @@ from app.tools.whatsapp_tools import (
 from app.tools.image import generate_image
 from app.tools.skills import read_skill
 from app.tools.rag import rag_ingest, rag_search
+from app.tools.database import query_database
 from app.mcp.loader import load_active_mcp_tools
 
 # ---------------------------------------------------------------------------
@@ -163,6 +164,7 @@ WORKER_TOOLS = [
     read_skill,
     rag_ingest,
     rag_search,
+    query_database,
 ]
 
 _TOOL_MAP: dict[str, Any] = {t.name: t for t in WORKER_TOOLS}
@@ -1184,6 +1186,7 @@ SUPERVISOR_TOOLS = [
     read_skill,
     rag_ingest,
     rag_search,
+    query_database,
     spawn_workers_tool,
 ]
 

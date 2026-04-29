@@ -201,7 +201,7 @@ async def create_database(
     await db.refresh(conn)
 
     import asyncio
-    asyncio.create_task(scan_schema(conn.id))
+    asyncio.create_task(scan_schema(conn.id, force=True))
 
     return _conn_dict(conn)
 
@@ -294,16 +294,8 @@ async def trigger_scan(
     if conn.is_scanning:
         return JSONResponse(status_code=200, content={"ok": False, "reason": "Scan already in progress"})
 
-    cooldown_seconds = _seconds_until_next_scan(conn)
-    if cooldown_seconds:
-        minutes = cooldown_seconds // 60
-        return JSONResponse(
-            status_code=429,
-            content={"ok": False, "reason": f"Cooldown active. Next scan in {minutes}m {cooldown_seconds % 60}s", "seconds_remaining": cooldown_seconds},
-        )
-
     import asyncio
-    asyncio.create_task(scan_schema(conn_id))
+    asyncio.create_task(scan_schema(conn_id, force=True))
     return {"ok": True, "reason": "Scan started"}
 
 
@@ -325,5 +317,5 @@ async def update_description(
     await db.commit()
     await db.refresh(conn)
     import asyncio
-    asyncio.create_task(scan_schema(conn_id))
+    asyncio.create_task(scan_schema(conn_id, force=True))
     return _conn_dict(conn)

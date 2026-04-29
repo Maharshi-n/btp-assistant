@@ -257,8 +257,11 @@ async def _write_skill_file(conn: DBConnection, content: str) -> None:
         pass
 
 
-async def scan_schema(conn_id: int) -> None:
-    """Scan schema for a connection, update skill file. Enforces lock + 1h cooldown."""
+async def scan_schema(conn_id: int, force: bool = False) -> None:
+    """Scan schema for a connection, update skill file.
+
+    force=True bypasses the 1h cooldown (used for manual user-triggered scans).
+    """
     from sqlalchemy import select
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(DBConnection).where(DBConnection.id == conn_id))
@@ -269,7 +272,7 @@ async def scan_schema(conn_id: int) -> None:
         if conn.is_scanning:
             return
 
-        if conn.last_scanned_at:
+        if not force and conn.last_scanned_at:
             elapsed = (datetime.now(timezone.utc) - conn.last_scanned_at.replace(tzinfo=timezone.utc)).total_seconds()
             if elapsed < 3600:
                 return

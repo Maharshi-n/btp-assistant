@@ -30,6 +30,24 @@
     </span>
   </div>
 
+  <!-- Scan progress overlay — shown while scanning -->
+  <div id="scan-overlay-{{ conn.id }}" class="{{ '' if conn.is_scanning else 'hidden' }} bg-blue-50 border-t border-blue-100 px-6 py-4">
+    <div class="flex items-center gap-3">
+      <svg class="w-5 h-5 text-blue-500 animate-spin flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+      </svg>
+      <div>
+        <p class="text-sm font-medium text-blue-700">Scanning schema…</p>
+        <p class="text-xs text-blue-500 mt-0.5" id="scan-detail-{{ conn.id }}">Reading tables and columns, then asking GPT-4o-mini to describe them.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scan done banner — shown briefly after scan completes -->
+  <div id="scan-done-{{ conn.id }}" class="hidden bg-green-50 border-t border-green-100 px-6 py-3">
+    <p class="text-sm text-green-700 font-medium">Scan complete — skill file updated.</p>
+  </div>
+
   <div class="px-6 pb-4 space-y-3">
 
     <!-- Description -->
@@ -306,6 +324,46 @@ async function testConn(id) {
   btn.disabled = false;
 }
 
+function _showScanningState(id) {
+  const btn = document.getElementById(`scan-btn-${id}`);
+  const overlay = document.getElementById(`scan-overlay-${id}`);
+  const statusEl = document.getElementById(`scan-status-${id}`);
+  if (btn) { btn.textContent = 'Scanning…'; btn.disabled = true; }
+  if (overlay) overlay.classList.remove('hidden');
+  if (statusEl) statusEl.innerHTML = `<span class="flex items-center gap-1 text-yellow-600">
+    <svg class="w-3 h-3 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+    </svg>
+    Scanning schema…</span>`;
+}
+
+function _showScanDone(id, lastScannedAt, cooldownSeconds) {
+  const btn = document.getElementById(`scan-btn-${id}`);
+  const overlay = document.getElementById(`scan-overlay-${id}`);
+  const doneBanner = document.getElementById(`scan-done-${id}`);
+  const statusEl = document.getElementById(`scan-status-${id}`);
+
+  if (overlay) overlay.classList.add('hidden');
+  if (doneBanner) {
+    doneBanner.classList.remove('hidden');
+    setTimeout(() => doneBanner.classList.add('hidden'), 4000);
+  }
+  if (statusEl && lastScannedAt) {
+    statusEl.textContent = 'Last scanned ' + lastScannedAt.slice(0, 16).replace('T', ' ');
+  }
+  if (btn) {
+    if (cooldownSeconds > 0) {
+      const m = Math.floor(cooldownSeconds / 60);
+      const s = cooldownSeconds % 60;
+      btn.textContent = `Scan in ${m}m ${s}s`;
+      btn.disabled = true;
+    } else {
+      btn.textContent = 'Scan Now';
+      btn.disabled = false;
+    }
+  }
+}
+
 async function scanConn(id) {
   const btn = document.getElementById(`scan-btn-${id}`);
   btn.textContent = 'Starting…';
@@ -314,24 +372,12 @@ async function scanConn(id) {
   try {
     const resp = await fetch(`/api/databases/${id}/scan`, {method: 'POST'});
     const data = await resp.json();
-    if (resp.status === 429) {
-      // Cooldown — update button text with remaining time
-      btn.textContent = data.reason || 'Cooldown active';
-    } else if (data.ok) {
-      // Scan started — update status indicator immediately
-      const statusEl = document.getElementById(`scan-status-${id}`);
-      if (statusEl) {
-        statusEl.innerHTML = `<span class="flex items-center gap-1 text-yellow-600">
-          <svg class="w-3 h-3 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-          </svg>
-          Scanning schema…</span>`;
-      }
-      btn.textContent = 'Scanning…';
-    } else {
+    if (!data.ok) {
       btn.textContent = data.reason || 'Error';
       setTimeout(() => { btn.textContent = 'Scan Now'; btn.disabled = false; }, 3000);
+      return;
     }
+    _showScanningState(id);
   } catch (e) {
     btn.textContent = 'Scan Now';
     btn.disabled = false;
@@ -363,7 +409,10 @@ async function deleteConn(id, name) {
   }
 }
 
-// Poll every 4 seconds — update scan status and button state for any card that is scanning
+// Track which connections were scanning on the previous poll tick
+const _wasScanning = {};
+
+// Poll every 3 seconds — update scan overlays and button states
 async function pollScanStatus() {
   try {
     const resp = await fetch('/api/databases');
@@ -373,35 +422,24 @@ async function pollScanStatus() {
       const card = document.getElementById(`conn-${conn.id}`);
       if (!card) continue;
 
-      const statusEl = document.getElementById(`scan-status-${conn.id}`);
-      const scanBtn = document.getElementById(`scan-btn-${conn.id}`);
-
       if (conn.is_scanning) {
-        if (statusEl) statusEl.innerHTML = `<span class="flex items-center gap-1 text-yellow-600">
-          <svg class="w-3 h-3 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-          </svg>
-          Scanning schema…</span>`;
-        if (scanBtn) { scanBtn.textContent = 'Scanning…'; scanBtn.disabled = true; }
+        _showScanningState(conn.id);
+        _wasScanning[conn.id] = true;
       } else {
-        // Not scanning — update last scanned text
-        if (statusEl) {
-          if (conn.last_scanned_at) {
-            statusEl.textContent = 'Last scanned ' + conn.last_scanned_at.slice(0, 16).replace('T', ' ');
-          } else {
-            statusEl.textContent = 'Never scanned';
-          }
-        }
-        // Update scan button
-        if (scanBtn) {
-          if (conn.scan_cooldown_seconds > 0) {
-            const m = Math.floor(conn.scan_cooldown_seconds / 60);
-            const s = conn.scan_cooldown_seconds % 60;
-            scanBtn.textContent = `Scan in ${m}m ${s}s`;
-            scanBtn.disabled = true;
-          } else {
-            // Only re-enable if it was previously scanning (avoid resetting a user-triggered state)
-            if (scanBtn.textContent === 'Scanning…' || scanBtn.disabled) {
+        if (_wasScanning[conn.id]) {
+          // Just finished scanning — show done banner
+          _showScanDone(conn.id, conn.last_scanned_at, conn.scan_cooldown_seconds || 0);
+          _wasScanning[conn.id] = false;
+        } else {
+          // Normal state update — keep button in sync with cooldown
+          const scanBtn = document.getElementById(`scan-btn-${conn.id}`);
+          if (scanBtn && scanBtn.textContent !== 'Starting…') {
+            if (conn.scan_cooldown_seconds > 0) {
+              const m = Math.floor(conn.scan_cooldown_seconds / 60);
+              const s = conn.scan_cooldown_seconds % 60;
+              scanBtn.textContent = `Scan in ${m}m ${s}s`;
+              scanBtn.disabled = true;
+            } else if (scanBtn.disabled && scanBtn.textContent !== 'Scanning…') {
               scanBtn.textContent = 'Scan Now';
               scanBtn.disabled = false;
             }
@@ -414,7 +452,14 @@ async function pollScanStatus() {
   }
 }
 
-// Start polling on page load
-setInterval(pollScanStatus, 4000);
+// Initialise _wasScanning for any connections already scanning on page load
+document.querySelectorAll('[id^="scan-overlay-"]').forEach(el => {
+  if (!el.classList.contains('hidden')) {
+    const id = el.id.replace('scan-overlay-', '');
+    _wasScanning[id] = true;
+  }
+});
+
+setInterval(pollScanStatus, 3000);
 </script>
 {% endblock %}

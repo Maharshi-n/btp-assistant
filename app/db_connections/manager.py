@@ -212,13 +212,9 @@ def _generate_skill_content(conn: DBConnection, tables_data: dict, descriptions:
         "## Available Tables",
     ]
     for table, info in tables_data.items():
-        lines.append(f"### {table}")
-        col_descs = descriptions.get(table, {})
-        for col in info["columns"]:
-            desc = col_descs.get(col["name"], "")
-            suffix = f" — {desc}" if desc else ""
-            lines.append(f"- {col['name']} ({col['type']}){suffix}")
-        lines.append("")
+        cols = ", ".join(f"{col['name']} ({col['type']})" for col in info["columns"])
+        lines.append(f"- **{table}**: {cols}")
+    lines.append("")
 
     lines += [
         "## How to Query",

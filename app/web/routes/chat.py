@@ -199,19 +199,21 @@ async def get_messages(
 
 
 async def _clear_lg_checkpoint(thread_id: int) -> None:
-    """Delete the LangGraph checkpoint rows for a thread so the next run starts clean."""
+    """Delete the LangGraph checkpoint rows for a thread so the next run starts clean.
+
+    LangGraph uses a dedicated SQLite file (checkpoints.db) — NOT the main app DB.
+    """
     try:
-        from sqlalchemy import text
-        from app.db.engine import AsyncSessionLocal
+        import aiosqlite
         tid = str(thread_id)
-        async with AsyncSessionLocal() as db:
+        async with aiosqlite.connect("checkpoints.db") as db:
             for tbl, col in [
                 ("checkpoints", "thread_id"),
                 ("checkpoint_blobs", "thread_id"),
                 ("checkpoint_writes", "thread_id"),
             ]:
                 try:
-                    await db.execute(text(f"DELETE FROM {tbl} WHERE {col} = :tid"), {"tid": tid})
+                    await db.execute(f"DELETE FROM {tbl} WHERE {col} = ?", (tid,))
                 except Exception:
                     pass
             await db.commit()

@@ -1473,8 +1473,10 @@ async def policy_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             continue
 
         ctx["tool_call_count"] += 1
+        logger.info("supervisor policy_tools: tool=%s tool_call_count=%d", tool_name, ctx["tool_call_count"])
         err = _check_bounds(ctx)
         if err:
+            logger.warning("supervisor policy_tools: BOUNDS CHECK FAILED tool=%s err=%s", tool_name, err)
             tool_messages.append(ToolMessage(tool_call_id=tool_call_id, content=err))
             continue
 

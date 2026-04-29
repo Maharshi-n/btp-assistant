@@ -1427,8 +1427,38 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
         )))
         response = await _ainvoke_with_retry(llm_with_tools, messages)
 
+    # Fix 4: if the model replied with no tool calls but there are relevant db_ skills
+    # available and the user message mentions "database", force a read_skill call.
+    if (
+        not workers_already_ran
+        and isinstance(response, AIMessage)
+        and not getattr(response, "tool_calls", None)
+        and skills_block  # there are skills in the index
+        and "db_" in skills_block  # at least one database skill exists
+        and any(kw in user_text.lower() for kw in ("database", "db", "table", "query", "sql", "users", "records", "rows"))
+    ):
+        # Extract the first db_ skill name from the skills block
+        import re as _re2
+        db_skill_match = _re2.search(r'"(db_[^"]+)"', skills_block)
+        if db_skill_match:
+            db_skill_name = db_skill_match.group(1)
+            logger.warning("supervisor_node: no tool_calls for DB query — forcing read_skill('%s')", db_skill_name)
+            messages.append(SystemMessage(content=(
+                f"You must call read_skill(\"{db_skill_name}\") right now to get the schema, "
+                "then call query_database with the correct SQL. "
+                "Do NOT reply in plain text. Emit the read_skill tool call immediately."
+            )))
+            response = await _ainvoke_with_retry(llm_with_tools, messages)
+
     # Fix 1: strip premature "I'll report back" chatter from tool-calling messages.
     response = _strip_premature_narration(response) if isinstance(response, AIMessage) else response
+
+    logger.info(
+        "supervisor_node: model=%s tool_calls=%s content_preview=%s",
+        model_name,
+        [tc["name"] for tc in (getattr(response, "tool_calls", None) or [])],
+        (getattr(response, "content", "") or "")[:120],
+    )
 
     return {"messages": [response], "run_context": ctx}
 

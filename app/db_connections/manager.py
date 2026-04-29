@@ -57,19 +57,22 @@ def decrypt_credentials(conn: DBConnection) -> tuple[str, str]:
 
 
 def build_url(conn: DBConnection) -> str:
+    from urllib.parse import quote
     username, password = decrypt_credentials(conn)
+    u = quote(username, safe="") if username else ""
+    p = quote(password, safe="") if password else ""
     if conn.db_type == "sqlite":
         return f"sqlite+aiosqlite:///{conn.db_name}"
     if conn.db_type == "mssql":
         driver = "ODBC+Driver+17+for+SQL+Server"
         return (
-            f"mssql+pyodbc://{username}:{password}@{conn.host}:{conn.port or 1433}"
+            f"mssql+pyodbc://{u}:{p}@{conn.host}:{conn.port or 1433}"
             f"/{conn.db_name}?driver={driver}"
         )
     if conn.db_type == "mysql":
-        return f"mysql+aiomysql://{username}:{password}@{conn.host}:{conn.port or 3306}/{conn.db_name}"
+        return f"mysql+aiomysql://{u}:{p}@{conn.host}:{conn.port or 3306}/{conn.db_name}"
     if conn.db_type == "postgres":
-        return f"postgresql+asyncpg://{username}:{password}@{conn.host}:{conn.port or 5432}/{conn.db_name}"
+        return f"postgresql+asyncpg://{u}:{p}@{conn.host}:{conn.port or 5432}/{conn.db_name}"
     raise ValueError(f"Unknown db_type: {conn.db_type!r}")
 
 

@@ -240,11 +240,18 @@ async def _stream_langgraph(
     - {type: "done",                message_id: <int>}
     - {type: "error",               content: "..."}
     """
-    # For a fresh user message (not a permission resume), always clear the
-    # LangGraph checkpoint so prior broken/interrupted state doesn't interfere.
-    # The full conversation history is rebuilt from the DB messages below.
+    # Clear the LangGraph checkpoint only for the very first message in a thread.
+    # For follow-up messages, keep the checkpoint so tool results (skill content,
+    # query results) persist in graph state and don't need to be re-fetched.
     if resume_command is None:
-        await _clear_lg_checkpoint(thread_id)
+        from sqlalchemy import func
+        async with AsyncSessionLocal() as _db:
+            msg_count_result = await _db.execute(
+                select(func.count()).where(Message.thread_id == thread_id)
+            )
+            msg_count = msg_count_result.scalar() or 0
+        if msg_count <= 1:
+            await _clear_lg_checkpoint(thread_id)
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(

@@ -1418,19 +1418,13 @@
       .replace(/"/g, '&quot;');
   }
 
-// ─── Auto-load last active thread on page load ───────────────────────────
+// ─── Auto-load thread from URL param only (never restore last thread) ────
   (function autoLoadThread() {
     const params = new URLSearchParams(window.location.search);
-    let tid = parseInt(params.get('thread'), 10);
-    if (!tid) {
-      tid = parseInt(localStorage.getItem('lastThreadId') || '', 10);
-    }
+    const tid = parseInt(params.get('thread'), 10);
     if (tid) {
       const btn = document.querySelector(`[data-thread-id="${tid}"]`);
-      // Only load if the thread still exists in the sidebar
-      if (btn || document.querySelector(`[data-thread-id="${tid}"]`)) {
-        loadThread(tid, btn || undefined);
-      }
+      if (btn) loadThread(tid, btn);
     }
   })();
 </script>

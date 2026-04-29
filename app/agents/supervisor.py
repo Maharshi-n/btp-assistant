@@ -1212,11 +1212,13 @@ _SUPERVISOR_TOOL_MAP: dict[str, Any] = {t.name: t for t in SUPERVISOR_TOOLS}
 def _should_continue(state: AgentState) -> str:
     last: BaseMessage = state["messages"][-1]
     if not (hasattr(last, "tool_calls") and last.tool_calls):
+        logger.info("_should_continue: no tool_calls → END (type=%s content_preview=%s)", type(last).__name__, str(getattr(last, "content", ""))[:80])
         return END
     # Route: if any call is spawn_workers_tool, go to workers node
     for tc in last.tool_calls:
         if tc["name"] == "spawn_workers_tool":
             return "workers"
+    logger.info("_should_continue: routing to tools for %s", [tc["name"] for tc in last.tool_calls])
     return "tools"
 
 

@@ -337,3 +337,22 @@ class WhatsAppMessage(Base):
     media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(_DT, server_default=func.now(), nullable=False)
+
+
+class DBConnection(Base):
+    __tablename__ = "db_connections"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    db_type: Mapped[str] = mapped_column(String(16), nullable=False)  # mssql | mysql | postgres | sqlite
+    host: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    db_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    username_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    password_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    whitelisted_tables: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    skill_description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    last_scanned_at: Mapped[datetime | None] = mapped_column(_DT, nullable=True)
+    is_scanning: Mapped[bool] = mapped_column(default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(_DT, server_default=func.now(), nullable=False)

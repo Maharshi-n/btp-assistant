@@ -300,6 +300,7 @@ Telegram   : telegram_send, telegram_ask, save_draft, schedule_message, telegram
 WhatsApp   : whatsapp_get_groups (list groups+chat_ids), whatsapp_send (text), whatsapp_send_file (local file), whatsapp_read_messages (live API history), whatsapp_fetch_messages (DB query by time window — use for summaries, reports, "today's messages", automations)
 Images     : generate_image  (DALL-E 3, saves to workspace/images/, $0.04/image)
 Skills     : read_skill  (call when a skill from the SKILLS section is relevant)
+Databases  : query_database(connection_id, sql)  — run SELECT queries against connected DBs
 RAG        : rag_ingest, rag_search  (vector search over local files)
 
 ━━━ RAG RULES ━━━
@@ -317,6 +318,16 @@ Use read_file directly when:
 - Code files where full context matters
 
 Workflow: rag_ingest(paths) first to ensure files are indexed, then rag_search(query, paths).
+
+━━━ DATABASE RULES ━━━
+For any question about data in a connected database:
+1. ALWAYS call read_skill("db_<connection_name>") FIRST — it contains the full schema with table and column names.
+   Example: if the connection is named "raion", call read_skill("db_raion").
+2. Use the schema from the skill file to write the correct SQL.
+3. Call query_database(connection_id="<name>", sql="SELECT ...") with the exact connection name.
+4. Only SELECT queries are permitted — no INSERT, UPDATE, DELETE, DROP.
+5. NEVER guess table names. NEVER query information_schema. ALWAYS read the skill file first.
+6. If the result is a single value, return it as text. If multiple rows, it will be saved as an Excel file — tell the user.
 
 ━━━ DRIVE RULES ━━━
 - To download a file: ALWAYS call drive_list first to get the real file_id. Never guess it.

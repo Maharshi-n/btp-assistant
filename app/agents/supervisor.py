@@ -1542,6 +1542,7 @@ async def policy_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             if tool_name.startswith("mcp__playwright__"):
                 _sweep_playwright_artifacts()
             result_str = _annotate_playwright_error(tool_name, result_str)
+            logger.info("supervisor policy_tools: tool=%s result_preview=%s", tool_name, result_str[:120])
             tool_messages.append(ToolMessage(tool_call_id=tool_call_id, content=result_str))
         except asyncio.TimeoutError:
             tool_messages.append(

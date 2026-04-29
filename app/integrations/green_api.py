@@ -152,6 +152,41 @@ class GreenAPIClient:
     async def reboot(self) -> dict:
         return await self._get("reboot")
 
+    async def send_file(self, chat_id: str, file_path: str, caption: str = "") -> dict:
+        """Upload and send a file via Green API sendFileByUpload endpoint."""
+        import mimetypes
+        from pathlib import Path
+        p = Path(file_path)
+        if not p.exists():
+            raise GreenAPIError(0, f"File not found: {file_path}")
+        mime = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
+        url = self._url("sendFileByUpload")
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    with p.open("rb") as f:
+                        resp = await client.post(
+                            url,
+                            data={"chatId": chat_id, "caption": caption},
+                            files={"file": (p.name, f, mime)},
+                        )
+                if resp.status_code < 500:
+                    if resp.status_code >= 400:
+                        raise GreenAPIError(resp.status_code, resp.text)
+                    return resp.json()
+                if attempt == 0:
+                    await asyncio.sleep(1)
+                    continue
+                raise GreenAPIError(resp.status_code, resp.text)
+            except GreenAPIError:
+                raise
+            except Exception as exc:
+                if attempt == 0:
+                    await asyncio.sleep(1)
+                    continue
+                raise GreenAPIError(0, str(exc)) from exc
+        raise GreenAPIError(0, "unreachable")
+
 
 def get_green_client() -> GreenAPIClient | None:
     if not app_config.whatsapp_enabled():

@@ -316,6 +316,7 @@ class WhatsAppGroup(Base):
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
     keyword_filter: Mapped[str | None] = mapped_column(Text, nullable=True)
     auto_send_allowed: Mapped[bool] = mapped_column(default=False, nullable=False)
+    interactive_mode: Mapped[bool] = mapped_column(default=False, nullable=False)
     last_message_at: Mapped[datetime | None] = mapped_column(_DT, nullable=True)
     created_at: Mapped[datetime] = mapped_column(_DT, server_default=func.now(), nullable=False)
 
@@ -336,6 +337,17 @@ class WhatsAppMessage(Base):
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(_DT, server_default=func.now(), nullable=False)
+
+
+class WhatsAppPendingThread(Base):
+    """Tracks an open interactive-mode conversation for a WhatsApp chat_id."""
+    __tablename__ = "whatsapp_pending_threads"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    chat_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    thread_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(_DT, nullable=False)
     created_at: Mapped[datetime] = mapped_column(_DT, server_default=func.now(), nullable=False)
 
 

@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.config as app_config
 from app.db.engine import AsyncSessionLocal, get_db
+import re
+
 from app.db.models import Message, Thread, WhatsAppGroup, WhatsAppMessage, WhatsAppPendingThread
 from app.integrations.green_api import GreenAPIError, get_green_client
 from app.web.deps import require_user
@@ -269,6 +271,49 @@ async def _handle_interactive_message(
 ) -> None:
     """Handle a message from an interactive-mode group."""
     _wa_cancel_idle_close(chat_id)
+
+    # switch <id> — works regardless of whether a thread is currently open
+    switch_match = re.fullmatch(r"switch\s+(\d+)", text.strip(), re.IGNORECASE)
+    if switch_match:
+        target_id = int(switch_match.group(1))
+        async with AsyncSessionLocal() as db:
+            target_thread = await db.get(Thread, target_id)
+            if target_thread is None:
+                try:
+                    client = get_green_client()
+                    if client:
+                        await client.send_message(chat_id, f"Thread #{target_id} doesn't exist.")
+                except Exception as exc:
+                    logger.warning("_handle_interactive_message: switch error send failed: %s", exc)
+                # Close any open thread without farewell
+                async with AsyncSessionLocal() as db2:
+                    await db2.execute(delete(WhatsAppPendingThread).where(WhatsAppPendingThread.chat_id == chat_id))
+                    await db2.commit()
+                return
+            # Thread exists — fetch last assistant message
+            last_msg_result = await db.execute(
+                select(Message)
+                .where(Message.thread_id == target_id, Message.role == "assistant")
+                .order_by(Message.created_at.desc())
+                .limit(1)
+            )
+            last_msg = last_msg_result.scalars().first()
+
+        # Close current thread (silent, no farewell)
+        async with AsyncSessionLocal() as db:
+            await db.execute(delete(WhatsAppPendingThread).where(WhatsAppPendingThread.chat_id == chat_id))
+            await db.commit()
+
+        # Register the target thread and send last message as context
+        await _wa_register_pending_thread(chat_id, target_id)
+        try:
+            client = get_green_client()
+            if client:
+                preview = last_msg.content[:1000] if last_msg else "(no messages yet)"
+                await client.send_message(chat_id, f"[Thread #{target_id}] Last message:\n\n{preview}")
+        except Exception as exc:
+            logger.warning("_handle_interactive_message: switch preview send failed: %s", exc)
+        return
 
     # Bye/exit → close thread
     if _wa_is_end_reply(text):

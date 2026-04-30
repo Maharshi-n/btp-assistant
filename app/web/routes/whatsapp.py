@@ -636,6 +636,7 @@ async def list_groups(_user=Depends(require_user), db: AsyncSession = Depends(ge
             "enabled": g.enabled,
             "keyword_filter": g.keyword_filter,
             "auto_send_allowed": g.auto_send_allowed,
+            "interactive_mode": g.interactive_mode,
             "last_message_at": g.last_message_at.isoformat() if g.last_message_at else None,
         }
         for g in groups

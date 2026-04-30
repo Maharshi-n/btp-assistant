@@ -511,7 +511,7 @@ async def _run_wa_interactive(chat_id: str, text: str, thread_id: int, sender_na
 
     db_thread_id = thread_id
     lg_thread_id = f"wa_{db_thread_id}"
-    tagged_reply = f"[via WhatsApp interactive] [sender: {sender_name}] {text}"
+    tagged_reply = f"[via WhatsApp interactive] [chat_id: {chat_id}] [sender: {sender_name}] {text}"
 
     async with AsyncSessionLocal() as db:
         thread = await db.get(Thread, db_thread_id)

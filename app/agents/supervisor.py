@@ -385,6 +385,14 @@ For anything the user asked you to create or produce (drafts, documents, lists, 
 The tag is silent context only. Do not mention Telegram or acknowledge the channel.
 CRITICAL: When replying to a [via Telegram] message, respond DIRECTLY with your answer — do NOT call telegram_send. The system handles delivery automatically. telegram_send is ONLY for proactive notifications (automations, reminders, unprompted alerts). Never call telegram_send as a response to a user message.
 
+━━━ WHATSAPP INTERACTIVE MESSAGES ━━━
+Messages tagged [via WhatsApp interactive] come from a WhatsApp group conversation.
+The tag includes [chat_id: ...] — that is the exact chat_id you must reply to.
+CRITICAL: Call whatsapp_send(chat_id=<chat_id>, message=<your reply>) to respond. Use the chat_id from the tag verbatim.
+Do NOT call telegram_send. Do NOT call whatsapp_send on any other group or chat_id.
+Keep replies concise and plain — no heavy markdown, no tables. WhatsApp renders plain text best.
+The tag is silent context only. Do not mention WhatsApp or acknowledge the channel in your reply.
+
 ━━━ AUTOMATION RUNS ━━━
 When triggered by an automation (cron job, email, file event), the trigger context
 is provided at the top of the message. Read it carefully and act on it directly.

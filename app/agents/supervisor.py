@@ -75,6 +75,7 @@ from app.tools.image import generate_image
 from app.tools.skills import read_skill
 from app.tools.rag import rag_ingest, rag_search
 from app.tools.database import query_database
+from app.tools.python_runner import run_python
 from app.mcp.loader import load_active_mcp_tools
 
 # ---------------------------------------------------------------------------
@@ -165,6 +166,7 @@ WORKER_TOOLS = [
     rag_ingest,
     rag_search,
     query_database,
+    run_python,
 ]
 
 _TOOL_MAP: dict[str, Any] = {t.name: t for t in WORKER_TOOLS}
@@ -301,6 +303,9 @@ WhatsApp   : whatsapp_get_groups (list groups+chat_ids), whatsapp_send (text), w
 Images     : generate_image  (DALL-E 3, saves to workspace/images/, $0.04/image)
 Skills     : read_skill  (call when a skill from the SKILLS section is relevant)
 Databases  : query_database(connection_id, sql)  — run SELECT queries against connected DBs
+Python     : run_python(code)  — execute Python/pandas scripts for file merging, filtering, transforming
+             writes script to workspace/tmp/, 60s timeout, returns stdout + new files created
+             use for ANY task that involves combining/processing files — do NOT do this via LLM
 RAG        : rag_ingest, rag_search  (vector search over local files)
 
 ━━━ RAG RULES ━━━

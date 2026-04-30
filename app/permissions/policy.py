@@ -245,6 +245,8 @@ _POLICY_TABLE: dict[str, object] = {
     "whatsapp_get_groups": policy_whatsapp_get_groups,
     # Database queries — SELECT-only enforced in execute_query, always auto
     "query_database": lambda args: "auto",
+    # Python runner — executes scripts in workspace/tmp/, always auto
+    "run_python": lambda args: "auto",
     # Skills — read-only, always auto
     "read_skill": lambda args: "auto",
     "save_draft": lambda args: "auto",

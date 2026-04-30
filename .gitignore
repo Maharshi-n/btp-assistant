@@ -58,3 +58,6 @@ repair.md
 
 # Runtime workspace directory (user data, not source)
 workspace/
+
+# Git worktrees (isolated feature branches)
+.worktrees/

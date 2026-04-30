@@ -382,7 +382,7 @@ async def reset_stuck_scans() -> None:
 
 
 async def register_weekly_scan_job() -> None:
-    """Register APScheduler daily-at-2am job that scans connections older than 7 days."""
+    """Register APScheduler job that runs daily at 2am and scans connections older than 7 days."""
     try:
         from app.automations.runtime import _scheduler
         from apscheduler.triggers.cron import CronTrigger
@@ -409,6 +409,6 @@ async def register_weekly_scan_job() -> None:
             id="db_weekly_scan",
             replace_existing=True,
         )
-        logger.info("Registered weekly DB scan job (daily at 2am)")
+        logger.info("Registered DB scan job (runs daily at 2am, scans connections older than 7 days)")
     except Exception as exc:
         logger.warning("Failed to register weekly DB scan job: %s", exc)

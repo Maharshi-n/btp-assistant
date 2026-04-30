@@ -287,6 +287,7 @@ async def _handle_interactive_message(
     if pending and pending.expires_at.replace(tzinfo=timezone.utc) > now:
         # Continue existing thread
         thread_id = pending.thread_id
+        new_thread = False
     else:
         # Open new thread
         async with AsyncSessionLocal() as db:
@@ -298,6 +299,15 @@ async def _handle_interactive_message(
             await db.commit()
             await db.refresh(thread)
             thread_id = thread.id
+        new_thread = True
+
+    if new_thread:
+        try:
+            client = get_green_client()
+            if client:
+                await client.send_message(chat_id, f"Got it, working on it... [Thread #{thread_id}]")
+        except Exception as exc:
+            logger.warning("_handle_interactive_message: ack send failed: %s", exc)
 
     await _run_wa_interactive(chat_id, text, thread_id, sender_name)
 

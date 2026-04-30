@@ -781,7 +781,7 @@ def unregister_automation(automation_id: int) -> None:
 _wa_seen_ids: dict[str, set[str]] = {}  # chat_id → set of message_id strings
 _wa_seen_lock = asyncio.Lock()
 
-WHATSAPP_POLL_INTERVAL = 15  # seconds between polls
+WHATSAPP_POLL_INTERVAL = 60  # seconds between polls
 WHATSAPP_POLL_FETCH_COUNT = 100  # messages to fetch per poll — covers bursts well above normal group activity
 
 

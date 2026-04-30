@@ -675,6 +675,16 @@ async def toggle_group(group_id: int, _user=Depends(require_user), db: AsyncSess
     return {"id": group_id, "enabled": group.enabled}
 
 
+@router.post("/api/whatsapp/groups/{group_id}/toggle-interactive")
+async def toggle_interactive_mode(group_id: int, _user=Depends(require_user), db: AsyncSession = Depends(get_db)):
+    group = await db.get(WhatsAppGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Group not found")
+    group.interactive_mode = not group.interactive_mode
+    await db.commit()
+    return {"id": group_id, "interactive_mode": group.interactive_mode}
+
+
 # ---------------------------------------------------------------------------
 # Manual send endpoint
 # ---------------------------------------------------------------------------

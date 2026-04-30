@@ -96,6 +96,7 @@
           <th class="px-4 py-2 font-medium">Last message</th>
           <th class="px-4 py-2 font-medium">Keyword filter</th>
           <th class="px-4 py-2 font-medium">Enabled</th>
+          <th class="px-4 py-2 font-medium">Interactive</th>
           <th class="px-4 py-2 font-medium"></th>
         </tr>
       </thead>
@@ -114,6 +115,14 @@
                            {% if g.enabled %}bg-blue-600{% else %}bg-gray-300{% endif %}">
               <span class="inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform
                            {% if g.enabled %}translate-x-4{% else %}translate-x-0.5{% endif %}"></span>
+            </button>
+          </td>
+          <td class="px-4 py-2">
+            <button onclick="toggleInteractiveMode({{ g.id }}, this)"
+                    class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors
+                           {% if g.interactive_mode %}bg-indigo-600{% else %}bg-gray-300{% endif %}">
+              <span class="inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform
+                           {% if g.interactive_mode %}translate-x-4{% else %}translate-x-0.5{% endif %}"></span>
             </button>
           </td>
           <td class="px-4 py-2 text-right">
@@ -286,6 +295,22 @@ async function toggleGroup(id, btn) {
       knob.classList.replace('translate-x-0.5', 'translate-x-4');
     } else {
       track.classList.replace('bg-blue-600', 'bg-gray-300');
+      knob.classList.replace('translate-x-4', 'translate-x-0.5');
+    }
+  }
+}
+
+async function toggleInteractiveMode(id, btn) {
+  const resp = await fetch(`/api/whatsapp/groups/${id}/toggle-interactive`, {method: 'POST'});
+  if (resp.ok) {
+    const data = await resp.json();
+    const track = btn;
+    const knob = track.querySelector('span');
+    if (data.interactive_mode) {
+      track.classList.replace('bg-gray-300', 'bg-indigo-600');
+      knob.classList.replace('translate-x-0.5', 'translate-x-4');
+    } else {
+      track.classList.replace('bg-indigo-600', 'bg-gray-300');
       knob.classList.replace('translate-x-4', 'translate-x-0.5');
     }
   }

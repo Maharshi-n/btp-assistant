@@ -324,6 +324,16 @@ Use read_file directly when:
 
 Workflow: rag_ingest(paths) first to ensure files are indexed, then rag_search(query, paths).
 
+━━━ PYTHON DATA RULES ━━━
+For ANY task involving filtering, merging, aggregating, or transforming files (Excel, CSV):
+1. NEVER do it by reading the file content into your context — data will be wrong or truncated.
+2. ALWAYS use run_python with a pandas script.
+3. ALWAYS call read_skill("python_data_ops") first to get the correct patterns.
+4. The script MUST print row count and output file path at the end.
+5. If run_python returns Exit: 1 — read stderr, fix the code, call run_python again.
+6. NEVER claim a file was created without seeing it in the "Files created:" section of run_python output.
+7. Workspace path convention: use 'workspace/filename.xlsx' (relative to project root).
+
 ━━━ DATABASE RULES ━━━
 For ANY question about data in a connected database — counts, records, queries, tables:
 1. DO NOT ask the user for connection names or table names. You have everything you need.

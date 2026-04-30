@@ -346,7 +346,7 @@ class WhatsAppPendingThread(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     chat_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
-    thread_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    thread_id: Mapped[int] = mapped_column(Integer, ForeignKey("threads.id", ondelete="CASCADE"), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(_DT, nullable=False)
     created_at: Mapped[datetime] = mapped_column(_DT, server_default=func.now(), nullable=False)
 

@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.config as app_config
 from app.db.engine import AsyncSessionLocal, get_db
-from app.db.models import Thread, WhatsAppGroup, WhatsAppMessage, WhatsAppPendingThread
+from app.db.models import Message, Thread, WhatsAppGroup, WhatsAppMessage, WhatsAppPendingThread
 from app.integrations.green_api import GreenAPIError, get_green_client
 from app.web.deps import require_user
 
@@ -506,10 +506,83 @@ async def _wa_close_thread(chat_id: str, farewell: str = "Talk to you later! ðŸ‘
 
 async def _run_wa_interactive(chat_id: str, text: str, thread_id: int, sender_name: str) -> None:
     """Run the agent on an interactive-mode WhatsApp message and reply."""
-    from app.web.routes.telegram import _run_direct_thread
+    from langchain_core.messages import AIMessage, HumanMessage
+    from app.agents.supervisor import get_graph
 
-    tagged = f"[via WhatsApp interactive] [sender: {sender_name}] {text}"
-    result_text = await _run_direct_thread(tagged, thread_id)
+    db_thread_id = thread_id
+    lg_thread_id = f"wa_{db_thread_id}"
+    tagged_reply = f"[via WhatsApp interactive] [sender: {sender_name}] {text}"
+
+    async with AsyncSessionLocal() as db:
+        thread = await db.get(Thread, db_thread_id)
+        model = thread.model if thread else app_config.DEFAULT_THREAD_MODEL
+        msg = Message(
+            thread_id=db_thread_id,
+            role="user",
+            content=text,
+            metadata_json=json.dumps({"whatsapp_reply": True}),
+        )
+        db.add(msg)
+        await db.commit()
+
+    graph = get_graph()
+    lg_config = {
+        "recursion_limit": 100,
+        "configurable": {
+            "thread_id": lg_thread_id,
+            "ws_thread_id": db_thread_id,
+            "model": model,
+            "automation_run": True,
+        },
+    }
+
+    lc_messages: list = [HumanMessage(content=tagged_reply)]
+    full_content: list[str] = []
+    last_ai_content: str = ""
+
+    try:
+        async for event in graph.astream_events({"messages": lc_messages}, lg_config, version="v2"):
+            event_type = event.get("event", "")
+            if event_type == "on_chat_model_stream":
+                chunk = event.get("data", {}).get("chunk")
+                if chunk and chunk.content:
+                    full_content.append(chunk.content)
+            elif event_type == "on_chain_end" and event.get("name") == "supervisor":
+                output = event.get("data", {}).get("output", {})
+                msgs = output.get("messages", []) if isinstance(output, dict) else []
+                for m in reversed(msgs):
+                    if isinstance(m, AIMessage) and m.content:
+                        last_ai_content = m.content if isinstance(m.content, str) else str(m.content)
+                        break
+
+        final_content = "".join(full_content) or last_ai_content
+
+        if final_content:
+            async with AsyncSessionLocal() as db2:
+                ai_msg = Message(
+                    thread_id=db_thread_id,
+                    role="assistant",
+                    content=final_content,
+                    metadata_json=json.dumps({"whatsapp_reply": True}),
+                )
+                db2.add(ai_msg)
+                await db2.commit()
+
+        result_text = final_content or "Done."
+
+    except Exception as exc:
+        logger.exception("_run_wa_interactive: supervisor run failed: %s", exc)
+        try:
+            checkpointer = get_graph().checkpointer
+            if checkpointer is not None:
+                await checkpointer.adelete_thread(lg_thread_id)
+        except Exception as ce:
+            logger.warning("_run_wa_interactive: failed to clear checkpoint: %s", ce)
+        exc_str = str(exc)
+        if "Recursion limit" in exc_str or "GraphRecursion" in type(exc).__name__:
+            result_text = "I got stuck in a retry loop and had to stop. Try again in a moment."
+        else:
+            result_text = f"Something went wrong: {exc_str[:300]}"
 
     if result_text:
         try:

@@ -83,6 +83,16 @@ def set_wa_polling_enabled(enabled: bool) -> None:
     logger.info("WA poll: polling %s", "enabled" if enabled else "paused")
 
 
+def get_wa_poll_interval() -> int:
+    return WHATSAPP_POLL_INTERVAL
+
+
+def set_wa_poll_interval(seconds: int) -> None:
+    global WHATSAPP_POLL_INTERVAL
+    WHATSAPP_POLL_INTERVAL = max(10, seconds)
+    logger.info("WA poll: interval set to %ds", WHATSAPP_POLL_INTERVAL)
+
+
 # ---------------------------------------------------------------------------
 # Trigger-fire helper
 # ---------------------------------------------------------------------------

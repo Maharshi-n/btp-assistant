@@ -33,6 +33,13 @@
             <span id="polling-knob" class="inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform translate-x-0.5"></span>
           </button>
           <span id="polling-status-text" class="text-xs text-gray-400">off</span>
+          <span class="text-xs text-gray-300">|</span>
+          <input id="poll-interval" type="number" min="10" step="5" value="60"
+                 class="w-14 border border-gray-300 rounded px-1.5 py-0.5 text-xs text-center focus:outline-none focus:ring-1 focus:ring-blue-500"
+                 title="Poll interval in seconds (min 10)"/>
+          <span class="text-xs text-gray-500">s</span>
+          <button onclick="savePollInterval()"
+                  class="text-xs text-blue-600 hover:text-blue-800 transition-colors">Save</button>
         </div>
       </div>
     </div>
@@ -198,6 +205,19 @@ async function loadPollingState() {
     const r = await fetch('/api/whatsapp/polling');
     const d = await r.json();
     setPollingUI(d.enabled);
+    if (d.interval) document.getElementById('poll-interval').value = d.interval;
+  } catch {}
+}
+
+async function savePollInterval() {
+  const seconds = parseInt(document.getElementById('poll-interval').value);
+  if (isNaN(seconds) || seconds < 10) { alert('Minimum interval is 10 seconds.'); return; }
+  try {
+    await fetch('/api/whatsapp/polling/interval', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({seconds}),
+    });
   } catch {}
 }
 

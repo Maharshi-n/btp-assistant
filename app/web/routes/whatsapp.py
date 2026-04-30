@@ -865,8 +865,16 @@ async def set_webhook_url(payload: WebhookUrlPayload, _user=Depends(require_user
 
 @router.get("/api/whatsapp/polling")
 async def get_polling_status(_user=Depends(require_user)):
-    from app.automations.runtime import get_wa_polling_enabled
-    return {"enabled": get_wa_polling_enabled()}
+    from app.automations.runtime import get_wa_poll_interval, get_wa_polling_enabled
+    return {"enabled": get_wa_polling_enabled(), "interval": get_wa_poll_interval()}
+
+
+@router.post("/api/whatsapp/polling/interval")
+async def set_polling_interval(body: dict, _user=Depends(require_user)):
+    from app.automations.runtime import set_wa_poll_interval
+    seconds = int(body.get("seconds", 60))
+    set_wa_poll_interval(seconds)
+    return {"interval": seconds}
 
 
 @router.post("/api/whatsapp/polling/toggle")

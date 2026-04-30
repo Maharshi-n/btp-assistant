@@ -199,8 +199,8 @@ async def _fire_automation(automation_id: int, trigger_context: dict | None = No
                     f"This run's thread_id is {thread.id} — include it ONLY in Telegram notifications as 'Thread: #{thread.id}'. "
                     "NEVER mention thread_id, Thread #, or any internal system info in WhatsApp group replies. "
                     f"THIS MESSAGE CAME FROM WHATSAPP (chat_id={chat_id}). "
-                    "If you need to send a reply or file back, use whatsapp_send or whatsapp_send_file with "
-                    f"chat_id='{chat_id}' — do NOT use telegram_send or telegram_send_file for the reply.]\n\n"
+                    "When sending a reply or file back, default to whatsapp_send or whatsapp_send_file with "
+                    f"chat_id='{chat_id}' — UNLESS the action explicitly instructs you to use Telegram.]\n\n"
                     + automation.action_prompt
                     + trusted
                 )

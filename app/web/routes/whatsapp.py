@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.config as app_config
 from app.db.engine import AsyncSessionLocal, get_db
-from app.db.models import WhatsAppGroup, WhatsAppMessage
+from app.db.models import Thread, WhatsAppGroup, WhatsAppMessage, WhatsAppPendingThread
 from app.integrations.green_api import GreenAPIError, get_green_client
 from app.web.deps import require_user
 
@@ -235,7 +235,14 @@ async def _handle_incoming(body: dict) -> None:
                 f"Keyword '{matched}' matched in [{group.name}]:\n{excerpt}"
             )
 
-    # Automation trigger
+    # Interactive mode check
+    if group and group.enabled and group.interactive_mode:
+        asyncio.get_running_loop().create_task(
+            _handle_interactive_message(chat_id, sender_name, text, group)
+        )
+        return
+
+    # Automation trigger (fire-and-forget, unchanged)
     try:
         from app.automations.runtime import on_whatsapp_message
         asyncio.get_running_loop().create_task(
@@ -252,6 +259,47 @@ async def _handle_incoming(body: dict) -> None:
         )
     except Exception as exc:
         logger.warning("WhatsApp automation dispatch failed: %s", exc)
+
+
+async def _handle_interactive_message(
+    chat_id: str,
+    sender_name: str,
+    text: str,
+    group: WhatsAppGroup,
+) -> None:
+    """Handle a message from an interactive-mode group."""
+    _wa_cancel_idle_close(chat_id)
+
+    # Bye/exit → close thread
+    if _wa_is_end_reply(text):
+        await _wa_close_thread(chat_id, "Talk to you later! 👋")
+        return
+
+    # Look up existing open thread
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(WhatsAppPendingThread).where(WhatsAppPendingThread.chat_id == chat_id)
+        )
+        pending = result.scalars().first()
+
+    now = datetime.now(timezone.utc)
+
+    if pending and pending.expires_at.replace(tzinfo=timezone.utc) > now:
+        # Continue existing thread
+        thread_id = pending.thread_id
+    else:
+        # Open new thread
+        async with AsyncSessionLocal() as db:
+            thread = Thread(
+                title=f"WhatsApp: {group.name} — {text[:50]}",
+                model=app_config.DEFAULT_THREAD_MODEL,
+            )
+            db.add(thread)
+            await db.commit()
+            await db.refresh(thread)
+            thread_id = thread.id
+
+    await _run_wa_interactive(chat_id, text, thread_id, sender_name)
 
 
 async def _store_message(body: dict, direction: str) -> None:
@@ -338,6 +386,159 @@ def _notify_owner_telegram(text: str) -> None:
         loop.create_task(_send())
     except RuntimeError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Interactive mode — idle close + bye/exit detection
+# ---------------------------------------------------------------------------
+
+_WA_IDLE_TIMEOUT_SECONDS = 120
+_WA_END_PHRASES = {
+    "no", "nope", "nah", "nothing", "nothing else", "that's all", "thats all",
+    "that's it", "thats it", "done", "bye", "goodbye", "thanks", "thank you",
+    "ok thanks", "ok thank you", "no thanks", "no thank you", "all good",
+    "i'm good", "im good", "stop", "exit", "quit", "end",
+}
+
+
+def _wa_is_end_reply(text: str) -> bool:
+    return text.lower().strip().rstrip("!.") in _WA_END_PHRASES
+
+
+def _wa_idle_job_id(chat_id: str) -> str:
+    return f"wa_idle_{chat_id}"
+
+
+def _wa_schedule_idle_close(chat_id: str, thread_id: int) -> None:
+    """Schedule (or reschedule) a 2-min idle-close job for this WhatsApp chat."""
+    try:
+        from app.automations.runtime import get_scheduler
+        from apscheduler.triggers.date import DateTrigger
+
+        scheduler = get_scheduler()
+        if scheduler is None or not scheduler.running:
+            return
+        fire_at = datetime.now(timezone.utc) + timedelta(seconds=_WA_IDLE_TIMEOUT_SECONDS)
+        scheduler.add_job(
+            _wa_fire_idle_close,
+            trigger=DateTrigger(run_date=fire_at),
+            id=_wa_idle_job_id(chat_id),
+            args=[chat_id, thread_id],
+            replace_existing=True,
+            max_instances=1,
+        )
+    except Exception as exc:
+        logger.warning("_wa_schedule_idle_close: failed: %s", exc)
+
+
+def _wa_cancel_idle_close(chat_id: str) -> None:
+    try:
+        from app.automations.runtime import get_scheduler
+        scheduler = get_scheduler()
+        if scheduler is None or not scheduler.running:
+            return
+        job = scheduler.get_job(_wa_idle_job_id(chat_id))
+        if job:
+            job.remove()
+    except Exception as exc:
+        logger.warning("_wa_cancel_idle_close: failed: %s", exc)
+
+
+async def _wa_fire_idle_close(chat_id: str, thread_id: int) -> None:
+    """APScheduler job: clear pending thread and notify user via WhatsApp."""
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(WhatsAppPendingThread).where(WhatsAppPendingThread.chat_id == chat_id)
+            )
+            pending = result.scalars().first()
+            if pending is None or pending.thread_id != thread_id:
+                return
+            if pending.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+                return
+            await db.execute(
+                delete(WhatsAppPendingThread).where(WhatsAppPendingThread.chat_id == chat_id)
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.warning("_wa_fire_idle_close: db error: %s", exc)
+        return
+
+    try:
+        from app.integrations.green_api import get_green_client
+        client = get_green_client()
+        if client:
+            await client.send_message(chat_id, "Thread closed due to inactivity. Send a message anytime to start a new one.")
+    except Exception as exc:
+        logger.warning("_wa_fire_idle_close: send failed: %s", exc)
+
+    logger.info("_wa_fire_idle_close: closed idle thread #%s for chat %s", thread_id, chat_id)
+
+
+async def _wa_register_pending_thread(chat_id: str, thread_id: int) -> None:
+    """Upsert a WhatsAppPendingThread row and (re)schedule idle close."""
+    expires = datetime.now(timezone.utc) + timedelta(hours=24)
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            delete(WhatsAppPendingThread).where(WhatsAppPendingThread.chat_id == chat_id)
+        )
+        db.add(WhatsAppPendingThread(chat_id=chat_id, thread_id=thread_id, expires_at=expires))
+        await db.commit()
+    _wa_schedule_idle_close(chat_id, thread_id)
+
+
+async def _wa_close_thread(chat_id: str, farewell: str = "Talk to you later! 👋") -> None:
+    """Close the pending thread and send farewell message."""
+    _wa_cancel_idle_close(chat_id)
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            delete(WhatsAppPendingThread).where(WhatsAppPendingThread.chat_id == chat_id)
+        )
+        await db.commit()
+    try:
+        from app.integrations.green_api import get_green_client
+        client = get_green_client()
+        if client:
+            await client.send_message(chat_id, farewell)
+    except Exception as exc:
+        logger.warning("_wa_close_thread: send failed: %s", exc)
+
+
+async def _run_wa_interactive(chat_id: str, text: str, thread_id: int, sender_name: str) -> None:
+    """Run the agent on an interactive-mode WhatsApp message and reply."""
+    from app.web.routes.telegram import _run_direct_thread
+
+    tagged = f"[via WhatsApp interactive] [sender: {sender_name}] {text}"
+    result_text = await _run_direct_thread(tagged, thread_id)
+
+    if result_text:
+        try:
+            from app.integrations.green_api import get_green_client
+            client = get_green_client()
+            if client:
+                for chunk in _split_message(result_text, 4000):
+                    await client.send_message(chat_id, chunk)
+        except Exception as exc:
+            logger.warning("_run_wa_interactive: send failed: %s", exc)
+
+    await _wa_register_pending_thread(chat_id, thread_id)
+
+
+def _split_message(text: str, max_len: int) -> list[str]:
+    """Split long text into chunks at newline boundaries."""
+    if len(text) <= max_len:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= max_len:
+            chunks.append(text)
+            break
+        split_at = text.rfind("\n", 0, max_len)
+        if split_at == -1:
+            split_at = max_len
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    return chunks
 
 
 # ---------------------------------------------------------------------------

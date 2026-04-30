@@ -981,7 +981,10 @@ async def _wa_poll_loop() -> None:
         try:
             async with AsyncSessionLocal() as db:
                 result = await db.execute(
-                    _select(WhatsAppGroup).where(WhatsAppGroup.enabled == True)  # noqa: E712
+                    _select(WhatsAppGroup).where(
+                        WhatsAppGroup.enabled == True,  # noqa: E712
+                        WhatsAppGroup.interactive_mode == False,  # noqa: E712
+                    )
                 )
                 groups = result.scalars().all()
 

@@ -112,6 +112,14 @@ async def whatsapp_webhook(
 
 
 async def _handle_incoming(body: dict) -> None:
+    from app.automations.runtime import _server_start_unix
+
+    # Drop messages that arrived before RAION started (replayed backlog)
+    msg_ts = body.get("timestamp", 0)
+    if msg_ts and _server_start_unix and msg_ts < _server_start_unix:
+        logger.debug("_handle_incoming: skipping pre-startup message (ts=%s)", msg_ts)
+        return
+
     sender_data = body.get("senderData", {})
     message_data = body.get("messageData", {})
 

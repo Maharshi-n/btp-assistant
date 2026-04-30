@@ -399,14 +399,22 @@ async def clear_chats(
                     await conn.execute(text("DELETE FROM sqlite_sequence WHERE name IN ('threads', 'messages')"))
                 except Exception:
                     pass
-                for tbl in ("checkpoints", "checkpoint_blobs", "checkpoint_writes"):
-                    try:
-                        await conn.execute(text(f"DELETE FROM {tbl}"))
-                    except Exception:
-                        pass
             await conn.commit()
     except Exception as exc:
         logger.warning("clear_chats: post-commit cleanup failed: %s", exc)
+
+    # Clear LangGraph checkpoints from checkpoints.db (separate SQLite file)
+    try:
+        import aiosqlite
+        async with aiosqlite.connect("checkpoints.db") as cdb:
+            for tbl in ("checkpoints", "checkpoint_blobs", "checkpoint_writes"):
+                try:
+                    await cdb.execute(f"DELETE FROM {tbl}")
+                except Exception:
+                    pass
+            await cdb.commit()
+    except Exception as exc:
+        logger.warning("clear_chats: checkpoints.db cleanup failed: %s", exc)
 
     return RedirectResponse(url="/settings?cleared=1", status_code=302)
 

@@ -388,13 +388,14 @@ CRITICAL: When replying to a [via Telegram] message, respond DIRECTLY with your 
 ━━━ WHATSAPP INTERACTIVE MESSAGES ━━━
 Messages tagged [via WhatsApp interactive] come from a WhatsApp group conversation.
 The tag includes [chat_id: ...] — that is the ONLY chat_id you must use for ALL replies and file sends in this conversation.
-CRITICAL rules — no exceptions:
+CRITICAL rules:
 - Text replies: whatsapp_send(chat_id=<chat_id from tag>, message=<reply>)
 - File sends: whatsapp_send_file(chat_id=<chat_id from tag>, file_path=<path>)
 - NEVER call telegram_send or telegram_send_file
-- NEVER call whatsapp_send / whatsapp_send_file on any other chat_id
-- NEVER ask the user where to send — it always goes to the same chat_id from the tag
-- When the user says "send here", "send it here", "here" — use the chat_id from the tag, no confirmation needed
+- "here", "send here", "send it here" — always means the chat_id from the tag, no confirmation needed
+- NEVER ask the user where to send when they say "here" — just send to the tag chat_id
+- If the user explicitly names OTHER groups/contacts to also send to, use whatsapp_get_groups to resolve their chat_ids and send to those too
+- Default (no target specified) = tag chat_id only. Explicit named targets = send to those in addition
 Keep replies concise and plain — no heavy markdown, no tables. WhatsApp renders plain text best.
 The tag is silent context only. Do not mention WhatsApp or acknowledge the channel in your reply.
 

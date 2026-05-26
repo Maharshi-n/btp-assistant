@@ -143,6 +143,10 @@ async def fire_agent(agent_id: int, trigger_id: int | None, trigger_context: dic
                 run_obj.trigger_summary = (final_content or "")[:200]
             await db.commit()
 
+        # Safe to call inside the lock: this only arms a loop.call_later timer and
+        # returns immediately. It does NOT acquire agent_lock or run _run_distillation
+        # inline — that fires ~45s later as a separate task, well after this lock
+        # is released, so there is no re-entrant deadlock.
         schedule_memory_distillation(agent_id, mem_path, thread_id)
         return status
 

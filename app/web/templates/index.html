@@ -193,10 +193,10 @@
   </aside>
 
   <!-- Main content -->
-  <div class="flex-1 flex flex-col min-w-0 h-screen">
+  <div class="flex-1 flex flex-col min-w-0 h-screen raion-ambient">
 
     <!-- Top bar (mobile hamburger + thread title + model switcher) -->
-    <header class="flex items-center gap-3 px-4 py-3 border-b bg-white shadow-sm shrink-0">
+    <header class="raion-header flex items-center gap-3 px-4 py-3 border-b bg-white shadow-sm shrink-0">
       <!-- Hamburger (mobile) -->
       <button onclick="openSidebar()" class="md:hidden text-gray-500 hover:text-gray-800">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -253,16 +253,23 @@
 
     <!-- Message pane -->
     <div id="messages-pane"
-         class="flex-1 overflow-y-auto px-4 py-6 space-y-4 flex flex-col">
+         class="raion-stream flex-1 overflow-y-auto px-4 py-6 space-y-4 flex flex-col">
       <!-- Welcome state when no thread selected -->
-      <div id="welcome-msg" class="flex flex-col items-center justify-center flex-1 text-center gap-2">
-        <p class="text-2xl font-semibold text-gray-700">Hey, Maharshi</p>
-        <p class="text-gray-400 text-sm">What can I help you with today?</p>
+      <div id="welcome-msg" class="raion-welcome flex flex-col items-center justify-center flex-1 text-center gap-2">
+        <p class="raion-welcome-title text-2xl font-semibold text-gray-700">Hey, Maharshi</p>
+        <p class="raion-welcome-sub text-gray-400 text-sm">What can I help you with today?</p>
+        <div class="raion-chips">
+          <button type="button" class="raion-chip" onclick="useSuggestion(this)">Summarize my latest emails</button>
+          <button type="button" class="raion-chip" onclick="useSuggestion(this)">Query the college database</button>
+          <button type="button" class="raion-chip" onclick="useSuggestion(this)">Draft a WhatsApp reply</button>
+          <button type="button" class="raion-chip" onclick="useSuggestion(this)">Create an automation</button>
+        </div>
       </div>
     </div>
 
     <!-- Input area -->
-    <div class="border-t bg-white px-4 py-3 shrink-0">
+    <div class="raion-composer-wrap border-t bg-white px-4 py-3 shrink-0">
+     <div class="raion-composer">
       <!-- Skill autocomplete dropdown -->
       <div id="skill-dropdown"
            class="hidden mb-1 bg-white border border-gray-200 rounded-xl shadow-lg
@@ -330,6 +337,7 @@
           </svg>
         </button>
       </form>
+     </div>
     </div>
 
   </div>
@@ -713,11 +721,16 @@
     if (empty) empty.remove();
 
     const wrapper = document.createElement('div');
-    wrapper.className = 'flex justify-start group';
+    wrapper.className = 'raion-turn flex justify-start group';
     wrapper.id = 'streaming-wrapper';
 
+    const av = document.createElement('div');
+    av.className = 'raion-avatar';
+    av.textContent = 'R';
+    wrapper.appendChild(av);
+
     const bubble = document.createElement('div');
-    bubble.className = 'max-w-[80%] bg-white border border-gray-200 text-gray-800 rounded-2xl rounded-bl-sm px-4 py-2 text-sm break-words shadow-sm space-y-0.5';
+    bubble.className = 'raion-assistant max-w-[80%] bg-white border border-gray-200 text-gray-800 rounded-2xl rounded-bl-sm px-4 py-2 text-sm break-words shadow-sm space-y-0.5';
     bubble.id = 'streaming-bubble';
 
     const cursor = document.createElement('span');
@@ -1011,13 +1024,21 @@
 
     const wrapper = document.createElement('div');
     wrapper.className = role === 'user'
-      ? 'flex justify-end group'
-      : 'flex justify-start group';
+      ? 'raion-turn user flex justify-end group'
+      : 'raion-turn flex justify-start group';
+
+    // Assistant turns get a small avatar to the left
+    if (role === 'assistant') {
+      const av = document.createElement('div');
+      av.className = 'raion-avatar';
+      av.textContent = 'R';
+      wrapper.appendChild(av);
+    }
 
     const bubble = document.createElement('div');
     bubble.className = role === 'user'
-      ? 'max-w-[80%] bg-blue-600 text-white rounded-2xl rounded-br-sm px-4 py-2 text-sm whitespace-pre-wrap break-words'
-      : 'max-w-[80%] bg-white border border-gray-200 text-gray-800 rounded-2xl rounded-bl-sm px-4 py-2 text-sm break-words shadow-sm space-y-0.5';
+      ? 'raion-bubble-user max-w-[80%] bg-blue-600 text-white rounded-2xl rounded-br-sm px-4 py-2 text-sm whitespace-pre-wrap break-words'
+      : 'raion-assistant max-w-[80%] bg-white border border-gray-200 text-gray-800 rounded-2xl rounded-bl-sm px-4 py-2 text-sm break-words shadow-sm space-y-0.5';
 
     if (role === 'assistant') {
       bubble.innerHTML = renderMarkdown(content);
@@ -1223,6 +1244,15 @@
   function autoResize(el) {
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  }
+
+  // ─── Welcome suggestion chips ─────────────────────────────────────────────
+  function useSuggestion(btn) {
+    const input = document.getElementById('msg-input');
+    if (!input || input.disabled) return;
+    input.value = btn.textContent.trim();
+    input.focus();
+    autoResize(input);
   }
 
   // ─── Skill autocomplete ───────────────────────────────────────────────────

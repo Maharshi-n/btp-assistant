@@ -257,6 +257,207 @@
       to   { opacity: 1; transform: translateY(0); }
     }
     [data-theme="dark"] #messages-pane > div { animation: raion-fade-in .2s ease; }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       SPACIOUS · CALM — chat experience design layer (dark)
+       Hooks added in index.html: .raion-shell, .raion-ambient, .raion-stream,
+       .raion-turn, .raion-bubble-user, .raion-assistant, .raion-composer-wrap,
+       .raion-composer, .raion-welcome, .raion-chip
+       ═════════════════════════════════════════════════════════════════════ */
+
+    :root {
+      --raion-col: 760px;          /* reading column width */
+      --raion-ease: cubic-bezier(.22,.61,.36,1);
+    }
+
+    /* Ambient: a soft radial aura behind the whole chat canvas */
+    [data-theme="dark"] .raion-ambient {
+      position: relative;
+      background-color: var(--bg-canvas) !important;
+    }
+    [data-theme="dark"] .raion-ambient::before {
+      content: "";
+      position: absolute; inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(60% 50% at 50% -8%, rgba(59,130,246,0.14), transparent 70%),
+        radial-gradient(40% 40% at 88% 8%, rgba(139,92,246,0.08), transparent 70%);
+      z-index: 0;
+    }
+    [data-theme="dark"] .raion-ambient > * { position: relative; z-index: 1; }
+
+    /* Reading column — center the conversation, give it air.
+       Turns are direct children of #messages-pane (JS appends them), so we
+       center each turn in a fixed column width rather than wrapping them. */
+    [data-theme="dark"] .raion-stream {
+      padding: 2.5rem 1.25rem 1.5rem !important;
+      gap: 1.75rem;                       /* generous space between turns */
+    }
+    [data-theme="dark"] .raion-stream > .raion-turn {
+      width: 100%;
+      max-width: var(--raion-col);
+      margin-left: auto;
+      margin-right: auto;
+    }
+    /* The welcome state also centers in the column */
+    [data-theme="dark"] .raion-stream > #welcome-msg {
+      max-width: var(--raion-col);
+      margin: 0 auto;
+    }
+
+    /* A turn row */
+    [data-theme="dark"] .raion-turn { display: flex; gap: .9rem; }
+    [data-theme="dark"] .raion-turn.user { justify-content: flex-end; }
+
+    /* Assistant: open text on the canvas, no box. Small avatar + roomy type. */
+    [data-theme="dark"] .raion-avatar {
+      flex-shrink: 0;
+      width: 30px; height: 30px;
+      border-radius: var(--raion-pill);
+      display: grid; place-items: center;
+      background: linear-gradient(140deg, #3b82f6, #6366f1);
+      box-shadow: 0 4px 14px rgba(59,130,246,0.35);
+      color: #fff; font-size: 13px; font-weight: 600;
+      margin-top: 2px;
+    }
+    /* High specificity (#messages-pane prefix) to beat the glass .bg-white rule */
+    [data-theme="dark"] #messages-pane .raion-assistant,
+    [data-theme="dark"] .raion-assistant {
+      max-width: calc(var(--raion-col) - 46px) !important;
+      background: transparent !important;
+      background-color: transparent !important;
+      border: 0 !important;
+      box-shadow: none !important;
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+      padding: .15rem 0 !important;
+      color: var(--txt-hi) !important;
+      font-size: 15px;
+      line-height: 1.7;
+    }
+    [data-theme="dark"] .raion-assistant p { margin: .35rem 0; }
+    [data-theme="dark"] .raion-assistant ul { margin: .5rem 0; }
+
+    /* User: soft glassy card, accent-tinted, aligned right */
+    [data-theme="dark"] .raion-bubble-user {
+      max-width: 78% !important;
+      background: linear-gradient(180deg, rgba(59,130,246,0.22), rgba(59,130,246,0.14)) !important;
+      border: 1px solid rgba(99,140,246,0.30) !important;
+      color: var(--txt-hi) !important;
+      border-radius: 18px 18px 6px 18px !important;
+      padding: .7rem 1rem !important;
+      font-size: 15px; line-height: 1.6;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+    }
+
+    /* Floating composer — a centered card that hovers above the canvas */
+    [data-theme="dark"] .raion-composer-wrap {
+      background: transparent !important;
+      border: 0 !important;
+      box-shadow: none !important;
+      padding: .5rem 1.25rem 1.5rem !important;
+    }
+    [data-theme="dark"] .raion-composer {
+      width: 100%;
+      max-width: var(--raion-col);
+      margin: 0 auto;
+      background: rgba(22,22,28,0.72) !important;
+      backdrop-filter: blur(18px) saturate(130%);
+      -webkit-backdrop-filter: blur(18px) saturate(130%);
+      border: 1px solid var(--glass-bdr) !important;
+      border-radius: 22px !important;
+      padding: .55rem .55rem .55rem 1rem !important;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+      transition: border-color .2s var(--raion-ease), box-shadow .2s var(--raion-ease);
+    }
+    [data-theme="dark"] .raion-composer:focus-within {
+      border-color: rgba(59,130,246,0.55) !important;
+      box-shadow: 0 0 0 3px rgba(59,130,246,0.14), 0 14px 44px rgba(0,0,0,0.55);
+    }
+    /* Textarea inside the floating composer: borderless, transparent */
+    [data-theme="dark"] .raion-composer #msg-input {
+      background: transparent !important;
+      border: 0 !important;
+      box-shadow: none !important;
+      border-radius: 0 !important;
+      padding: .45rem .25rem !important;
+      font-size: 15px;
+    }
+    [data-theme="dark"] .raion-composer #msg-input:focus { box-shadow: none !important; }
+    /* Circular icon buttons in composer */
+    [data-theme="dark"] .raion-composer #send-btn,
+    [data-theme="dark"] .raion-composer #attach-btn,
+    [data-theme="dark"] .raion-composer #stop-btn {
+      width: 40px; height: 40px;
+      border-radius: var(--raion-pill) !important;
+      display: grid; place-items: center;
+      padding: 0 !important;
+    }
+    [data-theme="dark"] .raion-composer #attach-btn {
+      background: transparent !important;
+      border: 0 !important;
+      color: var(--txt-lo) !important;
+    }
+    [data-theme="dark"] .raion-composer #attach-btn:hover { color: var(--txt-hi) !important; background: rgba(255,255,255,0.06) !important; }
+    [data-theme="dark"] .raion-composer #send-btn {
+      background: linear-gradient(140deg, #3b82f6, #6366f1) !important;
+      box-shadow: 0 6px 18px rgba(59,130,246,0.45);
+    }
+    [data-theme="dark"] .raion-composer #send-btn:hover {
+      box-shadow: 0 0 0 4px rgba(59,130,246,0.18), 0 8px 26px rgba(59,130,246,0.6);
+      transform: translateY(-1px);
+    }
+
+    /* Calm welcome state */
+    [data-theme="dark"] .raion-welcome { gap: 1.25rem !important; }
+    [data-theme="dark"] .raion-welcome-title {
+      font-size: 2.4rem; font-weight: 600; letter-spacing: -0.02em;
+      background: linear-gradient(120deg, #f5f6fa 30%, #93b4ff 75%, #b79bff);
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent; color: transparent;
+    }
+    [data-theme="dark"] .raion-welcome-sub { color: var(--txt-lo) !important; font-size: .95rem; }
+    [data-theme="dark"] .raion-chips { display: flex; flex-wrap: wrap; gap: .6rem; justify-content: center; max-width: 540px; }
+    [data-theme="dark"] .raion-chip {
+      border: 1px solid var(--glass-bdr);
+      background: rgba(255,255,255,0.03);
+      color: var(--txt-mid);
+      border-radius: var(--raion-pill);
+      padding: .5rem 1rem; font-size: .85rem;
+      cursor: pointer;
+      transition: all .18s var(--raion-ease);
+    }
+    [data-theme="dark"] .raion-chip:hover {
+      border-color: rgba(59,130,246,0.5);
+      background: rgba(59,130,246,0.10);
+      color: var(--txt-hi);
+      transform: translateY(-1px);
+    }
+
+    /* Sidebar polish — calmer thread list */
+    [data-theme="dark"] #sidebar .thread-item { border-radius: 10px; transition: background-color .16s var(--raion-ease); }
+    [data-theme="dark"] #new-chat-btn {
+      background: linear-gradient(140deg, rgba(59,130,246,0.18), rgba(99,102,241,0.14)) !important;
+      border: 1px solid rgba(99,140,246,0.28) !important;
+    }
+    [data-theme="dark"] #new-chat-btn:hover {
+      background: linear-gradient(140deg, rgba(59,130,246,0.30), rgba(99,102,241,0.22)) !important;
+      box-shadow: 0 4px 16px rgba(59,130,246,0.25);
+    }
+
+    /* Header: quiet, glassy, no hard border */
+    [data-theme="dark"] .raion-header {
+      background: rgba(10,10,12,0.55) !important;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--glass-bdr) !important;
+      box-shadow: none !important;
+    }
+
+    /* Reduced-motion: respect the user's OS setting */
+    @media (prefers-reduced-motion: reduce) {
+      [data-theme="dark"] * { animation: none !important; transition: none !important; }
+    }
   </style>
 </head>
 <body class="bg-gray-50 text-gray-900 min-h-screen">

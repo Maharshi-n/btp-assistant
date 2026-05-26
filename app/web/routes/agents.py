@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.config as app_config
@@ -83,6 +83,39 @@ async def set_agent_status(db: AsyncSession, agent_id: int, status: str) -> None
             unregister_agent_trigger(t.id)
 
 
+async def delete_agent_record(db: AsyncSession, agent_id: int) -> None:
+    """Fully remove an agent: unregister its scheduler triggers, delete its
+    triggers + runs + the agent row, and remove its memory file."""
+    agent = await db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(404, "Agent not found")
+
+    # Unregister any live scheduler jobs first so they can't fire for a dead agent.
+    trigs = (await db.execute(
+        select(AgentTrigger).where(AgentTrigger.agent_id == agent_id)
+    )).scalars().all()
+    for t in trigs:
+        try:
+            unregister_agent_trigger(t.id)
+        except Exception as exc:
+            logger.warning("delete_agent_record: unregister trigger %s failed: %s", t.id, exc)
+
+    # Remove the memory file (best-effort).
+    try:
+        path = app_config.WORKSPACE_DIR / agent.memory_path
+        if path.exists():
+            path.unlink()
+    except Exception as exc:
+        logger.warning("delete_agent_record: could not remove memory file for %s: %s", agent_id, exc)
+
+    # Delete dependent rows then the agent. AgentRun.trigger_id FKs the triggers,
+    # so delete runs before triggers.
+    await db.execute(sa_delete(AgentRun).where(AgentRun.agent_id == agent_id))
+    await db.execute(sa_delete(AgentTrigger).where(AgentTrigger.agent_id == agent_id))
+    await db.delete(agent)
+    await db.commit()
+
+
 @router.get("/agents")
 async def agents_page(request: Request, db: AsyncSession = Depends(get_db), _u: User = Depends(require_user)):
     agents = (await db.execute(select(Agent).order_by(Agent.created_at.desc()))).scalars().all()
@@ -121,6 +154,12 @@ async def api_pause(agent_id: int, db: AsyncSession = Depends(get_db), _u: User 
 async def api_resume(agent_id: int, db: AsyncSession = Depends(get_db), _u: User = Depends(require_user)):
     await set_agent_status(db, agent_id, "active")
     return JSONResponse({"status": "active"})
+
+
+@router.delete("/api/agents/{agent_id}")
+async def api_delete_agent(agent_id: int, db: AsyncSession = Depends(get_db), _u: User = Depends(require_user)):
+    await delete_agent_record(db, agent_id)
+    return JSONResponse({"deleted": agent_id})
 
 
 @router.get("/api/agents/{agent_id}/runs")

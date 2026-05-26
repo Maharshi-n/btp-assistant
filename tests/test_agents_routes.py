@@ -24,6 +24,32 @@ async def test_create_agent_persists_agent_and_triggers(db, monkeypatch):
     assert len(trigs) == 1
 
 
+async def test_delete_agent_removes_agent_triggers_and_runs(db, monkeypatch):
+    from datetime import datetime, timezone
+    from app.db.models import AgentRun
+    monkeypatch.setattr(agents_routes, "unregister_agent_trigger", lambda *a, **k: None)
+
+    agent = Agent(name="D", role_description="r", role_block="b", memory_path="agents/none.md")
+    db.add(agent)
+    await db.flush()
+    db.add(AgentTrigger(agent_id=agent.id, trigger_type="cron", trigger_config_json='{"cron": "0 9 * * *"}'))
+    db.add(AgentRun(agent_id=agent.id, started_at=datetime.now(timezone.utc), status="done", thread_id=1))
+    await db.flush()
+    aid = agent.id
+
+    await agents_routes.delete_agent_record(db, aid)
+
+    assert (await db.get(Agent, aid)) is None
+    trigs = (await db.execute(
+        AgentTrigger.__table__.select().where(AgentTrigger.agent_id == aid)
+    )).fetchall()
+    runs = (await db.execute(
+        AgentRun.__table__.select().where(AgentRun.agent_id == aid)
+    )).fetchall()
+    assert len(trigs) == 0
+    assert len(runs) == 0
+
+
 async def test_pause_resume_flips_status(db, monkeypatch):
     agent = Agent(name="A", role_description="r", role_block="b", memory_path="agents/a.md")
     db.add(agent)

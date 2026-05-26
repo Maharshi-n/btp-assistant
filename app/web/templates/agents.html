@@ -22,6 +22,7 @@
         {% endif %}
         <button onclick="viewMemory({{ a.id }})" class="px-3 py-1 border rounded">Memory</button>
         <button onclick="viewRuns({{ a.id }})" class="px-3 py-1 border rounded">Activity</button>
+        <button onclick="deleteAgent({{ a.id }}, '{{ a.name }}')" class="px-3 py-1 border border-red-400 text-red-600 rounded">Delete</button>
       </div>
     </div>
     {% endfor %}
@@ -70,6 +71,11 @@ async function viewMemory(id){
 async function viewRuns(id){
   const r = await fetch(`/api/agents/${id}/runs`); const d = await r.json();
   alert(d.map(x=>`[${x.status}] ${x.summary||''}`).join('\n') || 'No activity yet');
+}
+async function deleteAgent(id, name){
+  if (!confirm(`Delete agent "${name}"? This removes its triggers, run history, and memory. This cannot be undone.`)) return;
+  const r = await fetch(`/api/agents/${id}`, {method:'DELETE'});
+  if (r.ok) location.reload(); else alert('Delete failed');
 }
 </script>
 {% endblock %}

@@ -15,10 +15,36 @@
     })();
   </script>
   <style>
+    /* ── Design tokens ──────────────────────────────────────────────────────── */
+    :root {
+      --raion-radius: 0.85rem;
+      --raion-pill: 9999px;
+      --raion-accent: #3b82f6;
+      --raion-accent-glow: #60a5fa;
+    }
+    [data-theme="dark"] {
+      --bg-canvas:   #0a0a0c;
+      --bg-raised:   #111114;
+      --glass-bg:    rgba(28, 28, 34, 0.66);
+      --glass-bdr:   rgba(255, 255, 255, 0.08);
+      --glass-shadow: 0 8px 30px rgba(0, 0, 0, 0.55);
+      --txt-hi:      #f5f6fa;
+      --txt-mid:     #c7cbd4;
+      --txt-lo:      #8b8f9a;
+      --accent:      #3b82f6;
+      --accent-soft: rgba(59, 130, 246, 0.16);
+      --accent-glow: 0 0 0 3px rgba(59, 130, 246, 0.18), 0 0 18px rgba(59, 130, 246, 0.28);
+    }
+
     /* ── Dark theme overrides ───────────────────────────────────────────────── */
 
     /* Backgrounds */
-    [data-theme="dark"] body                  { background-color: #0f172a; color: #e2e8f0; }
+    [data-theme="dark"] body {
+  background-color: var(--bg-canvas) !important;
+  color: var(--txt-mid);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
     [data-theme="dark"] .bg-white             { background-color: #1e293b !important; }
     [data-theme="dark"] .bg-gray-50           { background-color: #0f172a !important; }
     [data-theme="dark"] .bg-gray-100          { background-color: #334155 !important; }

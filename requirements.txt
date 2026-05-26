@@ -32,3 +32,5 @@ pyodbc==5.2.0
 aioodbc==0.5.0
 aiomysql==0.2.0
 asyncpg==0.30.0
+pytest>=9.0
+pytest-asyncio>=1.3

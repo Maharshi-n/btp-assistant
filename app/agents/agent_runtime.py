@@ -82,7 +82,7 @@ async def fire_agent(agent_id: int, trigger_id: int | None, trigger_context: dic
                 return "skipped:budget"
 
             # Fresh thread per fire — the agent never reads its own prior output.
-            thread = Thread(title=f"[Agent] {agent.name[:50]}", model=agent.model, agent_id=agent_id)
+            thread = Thread(title=f"[Agent] {agent.name[:50]}", model=agent.model)
             db.add(thread)
             await db.flush()
 

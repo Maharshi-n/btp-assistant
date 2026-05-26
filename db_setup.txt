@@ -1,0 +1,14 @@
+● Only three things, all one-time:                                                                                                                          
+                                         
+  1. Allow remote connections in SQL Server                                                                                                                 
+  Open SQL Server Configuration Manager → enable TCP/IP protocol → restart SQL Server service. Takes 5 minutes.
+                                                                                                                                                            
+  2. Open port 1433 in Windows Firewall  
+  Windows Firewall → add inbound rule → port 1433. Takes 2 minutes.
+
+  3. Create a read-only user
+  Run this SQL once:
+  CREATE LOGIN raion_reader WITH PASSWORD = 'somepassword';
+  CREATE USER raion_reader FOR LOGIN raion_reader;
+  EXEC sp_addrolemember 'db_datareader', 'raion_reader';
+  Read-only access to entire DB. Done.

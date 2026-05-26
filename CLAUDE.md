@@ -2,7 +2,7 @@
 
 ## What this project is
 
-RAION is a personal AI assistant web app (FastAPI + Jinja2 + Tailwind CSS) built by Maharshi Nahar. It is a self-hosted ChatGPT-like interface that runs locally, backed by OpenAI models, with a multi-agent supervisor/worker architecture, automation engine, MCP connector system, memory, skills, and Telegram integration.
+RAION is a personal AI assistant web app (FastAPI + Jinja2 + Tailwind CSS) built by Maharshi Nahar. It is a self-hosted ChatGPT-like interface that runs locally, backed by OpenAI models, with a multi-agent supervisor/worker architecture, automation engine, MCP connector system, memory, skills, Telegram + WhatsApp integration, and **external database connectivity** (connect to SQL Server / MySQL / Postgres / SQLite, auto-scan the schema into a skill, and answer questions by querying live data). The database feature is a primary use case — RAION is deployed to talk to a college ERP (SQL Server) over the LAN.
 
 ---
 
@@ -11,8 +11,10 @@ RAION is a personal AI assistant web app (FastAPI + Jinja2 + Tailwind CSS) built
 | Layer | Tech |
 |-------|------|
 | Backend | Python 3.11+, FastAPI, SQLAlchemy 2 (async), SQLite (`app.db`) |
+| External DBs | SQL Server (`aioodbc` + ODBC Driver 17), MySQL (`aiomysql`), Postgres (`asyncpg`), SQLite (`aiosqlite`) — all via async SQLAlchemy |
 | Frontend | Jinja2 templates, Tailwind CSS (CDN `tailwind.min.js`), HTMX, vanilla JS |
-| AI / Agents | LangGraph, LangChain OpenAI, OpenAI API (gpt-4o, gpt-4o-mini, etc.) |
+| AI / Agents | LangGraph, LangChain OpenAI, OpenAI API (gpt-4o, gpt-4o-mini, etc.). DB schema scan uses gpt-5.4-mini |
+| Data ops | `run_python` tool (pandas scripts in a subprocess), `openpyxl` for Excel result export |
 | MCP | `mcp` SDK + `langchain-mcp-adapters` — stdio and SSE transports |
 | Auth | Session cookies via `itsdangerous`, bcrypt password hashing |
 | Scheduling | APScheduler (automation cron jobs) |
@@ -40,6 +42,9 @@ app/
     conversations.py      — multi-round Telegram conversation state machine
   integrations/
     green_api.py          — GreenAPIClient: send_message, get_chat_history, download_file, etc.
+  db_connections/
+    manager.py            — external DB engine: build_url, test_connection, scan_schema (→ writes db_<name>.md skill),
+                            execute_query (SELECT-only), FK extraction, encrypted credentials (Fernet)
   mcp/
     manager.py            — MCPManager singleton: connect/disconnect/tool discovery
     loader.py             — TTL-cached tool loader used by the agent
@@ -56,6 +61,8 @@ app/
     shell.py              — run_shell_command
     image.py              — image analysis tools
     rag.py                — RAG / document retrieval tools
+    database.py           — query_database tool (runs SELECT against a connected DB, returns text or Excel)
+    python_runner.py      — run_python tool (pandas/data scripts in a sandboxed subprocess, 60s timeout)
   web/
     deps.py               — require_user FastAPI dependency
     routes/
@@ -73,6 +80,7 @@ app/
       telegram_commands.py — Telegram slash command handling
       permissions.py      — /api/permissions/{id} (approve/deny tool calls)
       whatsapp.py         — /whatsapp UI, /webhook/whatsapp, /api/whatsapp/* (groups, send, polling toggle)
+      databases.py        — /databases UI, /api/databases (DB connection CRUD, test, manual "Scan Now")
       workspaces.py       — workspace management routes
       health.py           — /health
     templates/
@@ -86,6 +94,7 @@ app/
       audit.html          — audit log UI
       whatsapp.html       — WhatsApp group management, polling toggle, message history
       telegram_commands.html — Telegram command management UI
+      databases.html      — DB connection management UI (add/edit/test, Scan Now button, scan status)
       login.html          — login page
     static/
       tailwind.min.js     — Tailwind CSS CDN (offline copy)
@@ -172,6 +181,36 @@ Every tool call goes through `policy.py`. Permission modes per tool:
 - `deny` — always blocked
 
 MCP tools default to `ask` when first discovered.
+
+---
+
+## Database integration (external DBs)
+
+RAION can connect to external databases and answer natural-language questions by querying live data.
+
+### Flow
+
+1. User adds a connection in `/databases` — name, type (`mssql`/`mysql`/`postgres`/`sqlite`), host/port, db name, and a (read-only) username/password. Credentials are Fernet-encrypted at rest.
+2. **Scan** (`scan_schema` in `db_connections/manager.py`, manual "Scan Now" button) reads every table's columns + datatypes + a couple of sample rows, asks the LLM (gpt-5.4-mini) to describe columns, extracts any declared foreign keys, and writes a skill file `workspace/skills/db_<name>.md` registered in the `Skill` table.
+3. The scan also auto-generates a good **trigger description** so the agent knows when the DB is relevant.
+4. At query time the agent calls `read_skill("db_<name>")` to load the schema, writes SQL, and calls `query_database(connection_id="<name>", sql="SELECT ...")`. SELECT-only; results return as text (single value / small) or an Excel file (large tabular).
+5. On SQL error, `execute_query` auto-triggers a re-scan.
+
+### Connection URLs (built in `manager.py`)
+
+- SQL Server: `mssql+aioodbc://...?driver=ODBC+Driver+17+for+SQL+Server` (needs ODBC Driver 17 installed; **aioodbc**, not pyodbc — the async engine rejects sync drivers)
+- MySQL: `mysql+aiomysql://...` · Postgres: `postgresql+asyncpg://...` · SQLite: `sqlite+aiosqlite:///...`
+
+### Scan preserves hand-written notes
+
+The generated skill file has a block between `<!-- MANUAL_NOTES_BEGIN -->` / `<!-- MANUAL_NOTES_END -->`. A re-scan overwrites everything **except** that block. Rich hand-written relationship docs placed OUTSIDE the markers are lost on re-scan — so for a hand-curated DB skill, avoid re-scanning (or move knowledge inside the markers).
+
+### Deployed DB: `hbsolution` (college ERP)
+
+Live SQL Server 2005 ERP of a 5-college group, read-only user `raion_reader`, ~80 tables. Hard-won facts (also in the skill file + auto-memory):
+- **`Student_ID` is NOT unique** — it repeats across years/colleges. Unique key = `Student_ID + Session + Collage_ID`. Joining on `Student_ID` alone returns the wrong person's data.
+- Class/course is `Course_ID` (numeric) → join `Course_Master`. Grade names vary (`10th`, `10th EM`), so match with `LIKE`, never `=`.
+- College column is misspelled `Collage_ID` in student tables, `College_ID` elsewhere. Filter `Deleted=0` / `Temp_Deleted=0`.
 
 ---
 
@@ -268,6 +307,8 @@ No build step — Tailwind is the CDN/offline copy. No frontend bundler.
 - Phase 13: Scheduled tasks
 - Phase 14: WhatsApp integration (Green API, group management, webhook + polling, automation triggers)
   - 15s debounce per chat_id, getChatHistory context, image vision via GPT-4o downloadFile
+- Phase 15: Database integration (connect external SQL Server/MySQL/Postgres/SQLite, schema scan → auto skill,
+  query_database tool, run_python data ops, Excel export). Deployed against the college ERP over LAN.
 
 ---
 

@@ -97,7 +97,7 @@ async def on_startup() -> None:
     await _reregister_telegram_webhook()
     await _warm_mcp_manager()
     await _register_scheduled_tasks()
-    await _ensure_rag_skill_registered()
+    await _ensure_builtin_skills_registered()
     from app.automations.conversations import cleanup_old_conversations
     try:
         n = await cleanup_old_conversations()
@@ -105,10 +105,9 @@ async def on_startup() -> None:
             logging.getLogger(__name__).info("Cleaned up %d old conversations", n)
     except Exception:
         pass
-    from app.db_connections.manager import reset_stuck_scans, register_weekly_scan_job
+    from app.db_connections.manager import reset_stuck_scans
     try:
         await reset_stuck_scans()
-        await register_weekly_scan_job()
     except Exception as exc:
         logging.getLogger(__name__).warning("DB startup error: %s", exc)
 
@@ -158,28 +157,75 @@ async def _warm_mcp_manager() -> None:
         logging.getLogger(__name__).warning("MCP warm-up error: %s", exc)
 
 
-async def _ensure_rag_skill_registered() -> None:
-    """Register the built-in RAG skill in the Skill table if not already present."""
+# Built-in skills shipped with RAION. Each gets a Skill row (idempotent) so the
+# supervisor sees a 1-line trigger in its SKILLS index and loads the full file
+# on demand via read_skill(). This keeps the always-on system prompt small.
+_BUILTIN_SKILLS: list[dict[str, str]] = [
+    {
+        "name": "rag",
+        "file_path": "skills/rag.md",
+        "trigger_description": (
+            "Use for semantic search across files — find/locate content, "
+            "search by meaning, cross-file queries. NOT for full extraction or summarization."
+        ),
+    },
+    {
+        "name": "python_data_ops",
+        "file_path": "skills/python_data_ops.md",
+        "trigger_description": (
+            "Use BEFORE any task that filters, merges, aggregates, dedupes, or transforms "
+            "tabular files (Excel/CSV) — gives the correct run_python + pandas patterns."
+        ),
+    },
+    {
+        "name": "drive_ops",
+        "file_path": "skills/drive_ops.md",
+        "trigger_description": (
+            "Use for Google Drive tasks — listing, downloading, uploading, or creating Drive files "
+            "(drive_list/read/write/download/upload workflow rules)."
+        ),
+    },
+    {
+        "name": "web_research",
+        "file_path": "skills/web_research.md",
+        "trigger_description": (
+            "Use when researching on the web — search/fetch tuning, snippet-first strategy, "
+            "retry ladder, and which sites fetch cleanly."
+        ),
+    },
+    {
+        "name": "spawn_workers",
+        "file_path": "skills/spawn_workers.md",
+        "trigger_description": (
+            "Read before spawning parallel workers — the exact patterns that justify "
+            "spawn_workers_tool (multi-recipient, multi-delivery, ≥4 files, parallel browser tasks)."
+        ),
+    },
+]
+
+
+async def _ensure_builtin_skills_registered() -> None:
+    """Register all built-in skills in the Skill table if not already present (idempotent)."""
     try:
         from app.db.engine import AsyncSessionLocal
         from app.db.models import Skill
         async with AsyncSessionLocal() as db:
-            result = await db.execute(select(Skill).where(Skill.name == "rag"))
-            existing = result.scalar_one_or_none()
-            if existing is None:
-                db.add(Skill(
-                    name="rag",
-                    file_path="skills/rag.md",
-                    trigger_description=(
-                        "Use for semantic search across files — find/locate content, "
-                        "search by meaning, cross-file queries. NOT for full extraction or summarization."
-                    ),
-                    enabled=True,
-                ))
+            added = []
+            for spec in _BUILTIN_SKILLS:
+                result = await db.execute(select(Skill).where(Skill.name == spec["name"]))
+                if result.scalar_one_or_none() is None:
+                    db.add(Skill(
+                        name=spec["name"],
+                        file_path=spec["file_path"],
+                        trigger_description=spec["trigger_description"],
+                        enabled=True,
+                    ))
+                    added.append(spec["name"])
+            if added:
                 await db.commit()
-                logging.getLogger(__name__).info("Registered built-in RAG skill")
+                logging.getLogger(__name__).info("Registered built-in skills: %s", ", ".join(added))
     except Exception as exc:
-        logging.getLogger(__name__).warning("Failed to register RAG skill: %s", exc)
+        logging.getLogger(__name__).warning("Failed to register built-in skills: %s", exc)
 
 
 async def _register_scheduled_tasks() -> None:

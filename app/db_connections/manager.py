@@ -66,7 +66,7 @@ def build_url(conn: DBConnection) -> str:
     if conn.db_type == "mssql":
         driver = "ODBC+Driver+17+for+SQL+Server"
         return (
-            f"mssql+pyodbc://{u}:{p}@{conn.host}:{conn.port or 1433}"
+            f"mssql+aioodbc://{u}:{p}@{conn.host}:{conn.port or 1433}"
             f"/{conn.db_name}?driver={driver}"
         )
     if conn.db_type == "mysql":
@@ -124,6 +124,74 @@ async def _get_tables(conn: DBConnection) -> list[str]:
             else:
                 all_tables = []
         return [t for t in all_tables if not whitelisted or t in whitelisted]
+    finally:
+        await engine.dispose()
+
+
+async def _get_foreign_keys(conn: DBConnection) -> dict[str, list[dict]]:
+    """Return declared foreign keys per table: {table: [{column, ref_table, ref_column}, ...]}.
+
+    These are REAL constraints the database declares — not guesses. If the database
+    declares no foreign keys (common in legacy ERPs), this returns an empty dict.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy import text
+    url = build_url(conn)
+    engine = create_async_engine(url)
+    fks: dict[str, list[dict]] = {}
+    try:
+        async with engine.connect() as c:
+            if conn.db_type == "sqlite":
+                # Per-table PRAGMA — need the table list first
+                tbl_result = await c.execute(
+                    text("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+                )
+                tables = [row[0] for row in tbl_result]
+                for table in tables:
+                    if not re.match(r'^[A-Za-z0-9_$#]+$', table):
+                        continue
+                    fk_result = await c.execute(text(f"PRAGMA foreign_key_list({table})"))
+                    for row in fk_result:
+                        # PRAGMA foreign_key_list cols: id, seq, table, from, to, ...
+                        fks.setdefault(table, []).append(
+                            {"column": row[3], "ref_table": row[2], "ref_column": row[4]}
+                        )
+            elif conn.db_type in ("mssql", "mysql", "postgres"):
+                # Standard ANSI INFORMATION_SCHEMA referential constraints
+                query = text(
+                    "SELECT kcu.TABLE_NAME, kcu.COLUMN_NAME, "
+                    "       ccu.TABLE_NAME AS REF_TABLE, ccu.COLUMN_NAME AS REF_COLUMN "
+                    "FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc "
+                    "JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu "
+                    "  ON rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME "
+                    "JOIN INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE ccu "
+                    "  ON rc.UNIQUE_CONSTRAINT_NAME = ccu.CONSTRAINT_NAME"
+                )
+                try:
+                    result = await c.execute(query)
+                    for row in result:
+                        fks.setdefault(row[0], []).append(
+                            {"column": row[1], "ref_table": row[2], "ref_column": row[3]}
+                        )
+                except Exception as exc:
+                    # MySQL lacks CONSTRAINT_COLUMN_USAGE — fall back to its KEY_COLUMN_USAGE form
+                    if conn.db_type == "mysql":
+                        my_query = text(
+                            "SELECT TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME "
+                            "FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE "
+                            "WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_NAME IS NOT NULL"
+                        )
+                        result = await c.execute(my_query)
+                        for row in result:
+                            fks.setdefault(row[0], []).append(
+                                {"column": row[1], "ref_table": row[2], "ref_column": row[3]}
+                            )
+                    else:
+                        logger.warning("FK extraction failed for %s: %s", conn.name, exc)
+        return fks
+    except Exception as exc:
+        logger.warning("Foreign key scan failed for %s: %s", conn.name, exc)
+        return {}
     finally:
         await engine.dispose()
 
@@ -188,7 +256,7 @@ async def _describe_schema_with_llm(conn_name: str, tables_data: dict) -> dict[s
 
     try:
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5.4-mini",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
         )
@@ -198,7 +266,43 @@ async def _describe_schema_with_llm(conn_name: str, tables_data: dict) -> dict[s
         return {}
 
 
-def _generate_skill_content(conn: DBConnection, tables_data: dict, descriptions: dict[str, dict[str, str]]) -> str:
+# Markers around the hand-written section that scans MUST preserve.
+_NOTES_BEGIN = "<!-- MANUAL_NOTES_BEGIN -->"
+_NOTES_END = "<!-- MANUAL_NOTES_END -->"
+_NOTES_PLACEHOLDER = (
+    "_Write join rules, business logic, and query recipes here. "
+    "Anything between the BEGIN/END markers is PRESERVED across re-scans._\n\n"
+    "Examples:\n"
+    "- To find a student's pending fees: join `fees` to `students` on `student_id`, "
+    "filter `paid = 0`.\n"
+    "- \"Active student\" means `status = 'A'`.\n"
+    "- The yearly result table is built by joining `exam_results` to `exams` on `exam_id`."
+)
+
+
+def _extract_manual_notes(existing_content: str | None) -> str:
+    """Pull the hand-written notes block (between markers) out of the old file.
+
+    Returns the inner text if found, else a starter placeholder so the user
+    knows where to write.
+    """
+    if existing_content:
+        start = existing_content.find(_NOTES_BEGIN)
+        end = existing_content.find(_NOTES_END)
+        if start != -1 and end != -1 and end > start:
+            inner = existing_content[start + len(_NOTES_BEGIN):end].strip("\n")
+            if inner.strip():
+                return inner
+    return _NOTES_PLACEHOLDER
+
+
+def _generate_skill_content(
+    conn: DBConnection,
+    tables_data: dict,
+    descriptions: dict[str, dict[str, str]],
+    foreign_keys: dict[str, list[dict]],
+    manual_notes: str,
+) -> str:
     """Build the skill file markdown content."""
     type_label = {"mssql": "SQL Server", "mysql": "MySQL", "postgres": "PostgreSQL", "sqlite": "SQLite"}.get(conn.db_type, conn.db_type)
     host_part = f"Host: {conn.host} | " if conn.host else ""
@@ -214,7 +318,41 @@ def _generate_skill_content(conn: DBConnection, tables_data: dict, descriptions:
     for table, info in tables_data.items():
         cols = ", ".join(f"{col['name']} ({col['type']})" for col in info["columns"])
         lines.append(f"- **{table}**: {cols}")
+        # Show up to 2 real sample rows so the agent sees actual data shape/values.
+        col_names = [col["name"] for col in info["columns"]]
+        for sample in info.get("samples", [])[:2]:
+            pairs = ", ".join(
+                f"{name}={_fmt_sample(val)}"
+                for name, val in zip(col_names, sample)
+            )
+            lines.append(f"    - e.g. {pairs}")
     lines.append("")
+
+    # Declared foreign-key relationships — facts from the DB, not guesses.
+    fk_lines: list[str] = []
+    for table, rels in foreign_keys.items():
+        for rel in rels:
+            fk_lines.append(
+                f"- `{table}.{rel['column']}` → `{rel['ref_table']}.{rel['ref_column']}`"
+            )
+    lines += ["## Relationships (declared foreign keys)"]
+    if fk_lines:
+        lines += fk_lines
+    else:
+        lines.append(
+            "_No foreign keys are declared in this database. Tables may still be "
+            "linked by matching column names/values — see the manual notes below._"
+        )
+    lines.append("")
+
+    # Hand-written notes — PRESERVED across re-scans.
+    lines += [
+        "## Notes & Relationships (hand-written — preserved across scans)",
+        _NOTES_BEGIN,
+        manual_notes,
+        _NOTES_END,
+        "",
+    ]
 
     lines += [
         "## How to Query",
@@ -222,9 +360,43 @@ def _generate_skill_content(conn: DBConnection, tables_data: dict, descriptions:
         f"- connection_id: `{conn.name}`",
         "- Write standard SQL SELECT queries only",
         "- No INSERT, UPDATE, DELETE, DROP permitted",
-        "- For ambiguous columns, refer to table descriptions above",
+        "- For ambiguous columns, refer to the sample rows and table descriptions above",
+        "- For joins, prefer the declared foreign keys; otherwise consult the manual notes",
     ]
     return "\n".join(lines)
+
+
+def _fmt_sample(val: Any) -> str:
+    """Format a sample cell value compactly for the skill file."""
+    if val is None:
+        return "NULL"
+    s = str(val)
+    if len(s) > 40:
+        s = s[:37] + "..."
+    return s
+
+
+async def _generate_trigger_description(conn: DBConnection, skill_content: str) -> str:
+    """Ask LLM to generate a good skill trigger description based on the schema."""
+    from openai import AsyncOpenAI
+    client = AsyncOpenAI(api_key=app_config.OPENAI_API_KEY)
+    prompt = (
+        "You are configuring an AI assistant. Based on the database skill file below, "
+        "write a single concise trigger description (max 30 words) that tells the AI when to use this skill. "
+        "Focus on the kinds of questions a user would ask — use natural language topics, not database/table names. "
+        "Example: 'use when the user asks about students, fees, attendance, exam results, admissions, or staff at the college'\n\n"
+        f"Skill file:\n{skill_content[:2000]}"
+    )
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-5.4-mini",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        trigger = response.choices[0].message.content.strip().strip('"').strip("'")
+        return trigger or f"use when the user asks about the {conn.name} database"
+    except Exception as exc:
+        logger.warning("Failed to generate trigger description: %s", exc)
+        return f"use when the user asks about the {conn.name} database (tables, records, queries)"
 
 
 async def _write_skill_file(conn: DBConnection, content: str) -> None:
@@ -243,10 +415,11 @@ async def _write_skill_file(conn: DBConnection, content: str) -> None:
     file_path.write_text(content, encoding="utf-8")
     relative_path = f"skills/{skill_name}.md"
 
+    trigger = await _generate_trigger_description(conn, content)
+
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Skill).where(Skill.name == skill_name))
         existing = result.scalars().first()
-        trigger = f"use when the user asks about the {conn.name} database (tables, records, queries)"
         if existing:
             existing.trigger_description = trigger
             existing.file_path = relative_path
@@ -299,8 +472,18 @@ async def scan_schema(conn_id: int, force: bool = False) -> None:
             columns, samples = await _get_columns_and_samples(conn_snapshot, table)
             tables_data[table] = {"columns": columns, "samples": samples}
 
+        foreign_keys = await _get_foreign_keys(conn_snapshot)
+
+        # Preserve any hand-written notes from the previous skill file.
+        skills_dir = (app_config.WORKSPACE_DIR / "skills").resolve()
+        prev_path = skills_dir / f"db_{conn_snapshot.name}.md"
+        prev_content = prev_path.read_text(encoding="utf-8") if prev_path.exists() else None
+        manual_notes = _extract_manual_notes(prev_content)
+
         descriptions = await _describe_schema_with_llm(conn_snapshot.name, tables_data)
-        skill_content = _generate_skill_content(conn_snapshot, tables_data, descriptions)
+        skill_content = _generate_skill_content(
+            conn_snapshot, tables_data, descriptions, foreign_keys, manual_notes
+        )
         await _write_skill_file(conn_snapshot, skill_content)
         logger.info("Schema scan complete for %s (%d tables)", conn_snapshot.name, len(tables))
     except Exception as exc:

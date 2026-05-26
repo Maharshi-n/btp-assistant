@@ -746,6 +746,7 @@
 
     streamingBubble = bubble;
     streamingText = '';
+    setGenerating(true);   // RAION is now thinking/streaming → show Stop, hide Send
     return bubble;
   }
 
@@ -847,6 +848,7 @@
     streamingBubble.appendChild(ts);
     streamingBubble = null;
     streamingText = '';
+    setGenerating(false);
     setInputEnabled(true);
   }
 
@@ -857,6 +859,7 @@
     streamingBubble.textContent = '⚠️ ' + message;
     streamingBubble = null;
     streamingText = '';
+    setGenerating(false);
     setInputEnabled(true);
   }
 
@@ -865,11 +868,18 @@
     document.getElementById('msg-input').disabled = !enabled;
     document.getElementById('send-btn').disabled = !enabled;
     document.getElementById('attach-btn').disabled = !enabled;
-    document.getElementById('stop-btn').classList.toggle('hidden', enabled);
-    document.getElementById('send-btn').classList.toggle('hidden', !enabled);
     if (enabled) {
       document.getElementById('msg-input').focus();
     }
+  }
+
+  // ─── Generation state → Stop/Send button visibility ──────────────────────
+  // Stop is shown ONLY while RAION is thinking or streaming a reply.
+  // This is independent of whether the composer is enabled (e.g. the welcome
+  // screen has a disabled composer but is NOT generating, so Send stays shown).
+  function setGenerating(active) {
+    document.getElementById('stop-btn').classList.toggle('hidden', !active);
+    document.getElementById('send-btn').classList.toggle('hidden', active);
   }
 
   async function stopGeneration() {
@@ -884,6 +894,7 @@
       streamingText = '';
     }
     _resetAgentsPanel();
+    setGenerating(false);   // back to Send immediately
     document.getElementById('stop-btn').disabled = true;
     try {
       await fetch(`/api/threads/${activeThreadId}/stop`, { method: 'POST' });

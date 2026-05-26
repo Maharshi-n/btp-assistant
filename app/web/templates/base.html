@@ -385,17 +385,25 @@
       font-size: 15px;
     }
     [data-theme="dark"] .raion-composer #msg-input:focus { box-shadow: none !important; }
-    /* Circular icon buttons in composer */
+    /* Circular icon buttons in composer.
+       :not(.hidden) so Tailwind's `.hidden` (display:none) still wins — otherwise
+       this display:grid would force the Stop button visible even when toggled off. */
+    [data-theme="dark"] .raion-composer #send-btn:not(.hidden),
+    [data-theme="dark"] .raion-composer #attach-btn:not(.hidden),
+    [data-theme="dark"] .raion-composer #stop-btn:not(.hidden) {
+      display: grid; place-items: center;
+    }
     [data-theme="dark"] .raion-composer #send-btn,
     [data-theme="dark"] .raion-composer #attach-btn,
     [data-theme="dark"] .raion-composer #stop-btn {
       width: 38px; height: 38px;
       min-width: 38px;
       border-radius: var(--raion-pill) !important;
-      display: grid; place-items: center;
       padding: 0 !important;
       border: 0 !important;
     }
+    /* Make sure .hidden always beats the sizing rule above */
+    [data-theme="dark"] .raion-composer .hidden { display: none !important; }
     [data-theme="dark"] .raion-composer #attach-btn {
       background: transparent !important;
       color: var(--txt-lo) !important;

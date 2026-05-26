@@ -82,11 +82,19 @@ async def init_db() -> None:
                 await conn.execute(text("ALTER TABLE automations ADD COLUMN raw_description TEXT"))
             except Exception:
                 pass
+            try:
+                await conn.execute(text("ALTER TABLE threads ADD COLUMN agent_id INTEGER"))
+            except Exception:
+                pass
         else:
             try:
                 await conn.execute(text("ALTER TABLE automations ADD COLUMN IF NOT EXISTS raw_description TEXT"))
             except Exception:
                 pass  # column already exists
+            try:
+                await conn.execute(text("ALTER TABLE threads ADD COLUMN IF NOT EXISTS agent_id INTEGER"))
+            except Exception:
+                pass
 
     # Set busy_timeout on every future async connection via pool checkout event.
     # WAL mode is already persistent in the file, but busy_timeout is per-connection.

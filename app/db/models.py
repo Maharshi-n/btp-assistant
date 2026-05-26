@@ -44,6 +44,7 @@ class Thread(Base):
         _DT, server_default=func.now(), nullable=False
     )
     model: Mapped[str] = mapped_column(String(64), nullable=False, default="gpt-4o-mini")
+    agent_id: Mapped[int] = mapped_column(Integer, nullable=True, index=True)
 
 
 class Message(Base):

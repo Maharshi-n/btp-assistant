@@ -157,7 +157,7 @@ async def list_threads(
     _user: User = Depends(require_user),
 ):
     result = await db.execute(
-        select(Thread).order_by(Thread.created_at.desc())
+        select(Thread).where(Thread.agent_id.is_(None)).order_by(Thread.created_at.desc())
     )
     threads = result.scalars().all()
     return [

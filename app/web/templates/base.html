@@ -45,7 +45,13 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
-    [data-theme="dark"] .bg-white             { background-color: #1e293b !important; }
+    [data-theme="dark"] .bg-white {
+  background-color: var(--glass-bg) !important;
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  border-color: var(--glass-bdr) !important;
+  box-shadow: var(--glass-shadow);
+}
     [data-theme="dark"] .bg-gray-50           { background-color: #0f172a !important; }
     [data-theme="dark"] .bg-gray-100          { background-color: #334155 !important; }
     [data-theme="dark"] .bg-gray-200          { background-color: #475569 !important; }
@@ -87,9 +93,9 @@
 
     /* Assistant message bubbles */
     [data-theme="dark"] #messages-pane .bg-white {
-      background-color: #1e293b !important;
-      border-color: #334155 !important;
-      color: #e2e8f0 !important;
+      background-color: var(--glass-bg) !important;
+      border-color: var(--glass-bdr) !important;
+      color: var(--txt-hi) !important;
     }
 
     /* Inline code inside messages */

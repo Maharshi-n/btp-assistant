@@ -779,6 +779,64 @@ def unregister_automation(automation_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Agent trigger registration (reuses scheduler/observer; dispatches to fire_agent)
+# ---------------------------------------------------------------------------
+
+def _agent_job_id(kind: str, trigger_id: int) -> str:
+    return f"agent_{kind}_{trigger_id}"
+
+
+async def _fire_agent_job(agent_id: int, trigger_id: int) -> None:
+    """APScheduler coroutine for an agent cron/gmail trigger."""
+    from app.agents.agent_runtime import fire_agent
+    await fire_agent(agent_id, trigger_id=trigger_id, trigger_context={})
+
+
+def register_agent_trigger(trigger, loop) -> None:
+    """Register one AgentTrigger. Mirrors _register_automation but routes to fire_agent."""
+    global _scheduler, _observer
+    config: dict = json.loads(trigger.trigger_config_json)
+    aid = trigger.agent_id
+    tid = trigger.id
+
+    if trigger.trigger_type == "cron":
+        cron_expr = config.get("cron", "*/5 * * * *")
+        parts = cron_expr.split()
+        if len(parts) != 5:
+            logger.warning("Agent trigger %d: invalid cron %r — skipping", tid, cron_expr)
+            return
+        minute, hour, day, month, dow = parts
+        job_id = _agent_job_id("cron", tid)
+        if _scheduler and not _scheduler.get_job(job_id):
+            _scheduler.add_job(
+                _fire_agent_job,
+                trigger=CronTrigger(minute=minute, hour=hour, day=day, month=month, day_of_week=dow),
+                id=job_id, replace_existing=True, args=[aid, tid],
+                max_instances=1, misfire_grace_time=120, coalesce=True,
+            )
+            logger.info("Registered agent cron trigger %d (agent %d): %s", tid, aid, cron_expr)
+
+    elif trigger.trigger_type in ("gmail_any_new", "gmail_new_from_sender", "gmail_keyword_match"):
+        logger.info("Agent gmail trigger %d (agent %d) registered (poll wiring TODO in follow-up)", tid, aid)
+
+    elif trigger.trigger_type in (
+        "whatsapp_group_new", "whatsapp_keyword_match", "whatsapp_outgoing_new", "whatsapp_smart_reply",
+    ):
+        logger.info("Registered agent whatsapp trigger %d (agent %d) — webhook-driven", tid, aid)
+    else:
+        logger.warning("Agent trigger %d: unsupported trigger_type %r", tid, trigger.trigger_type)
+
+
+def unregister_agent_trigger(trigger_id: int) -> None:
+    global _scheduler
+    for kind in ("cron", "gmail"):
+        job_id = _agent_job_id(kind, trigger_id)
+        if _scheduler and _scheduler.get_job(job_id):
+            _scheduler.remove_job(job_id)
+            logger.info("Removed agent scheduler job %s", job_id)
+
+
+# ---------------------------------------------------------------------------
 # Startup / shutdown
 # ---------------------------------------------------------------------------
 
@@ -1045,6 +1103,20 @@ async def start_automations_runtime() -> None:
     for automation in automations:
         _register_automation(automation, loop)
 
+    # Load all enabled agents' triggers (active agents only)
+    async with AsyncSessionLocal() as db:
+        from sqlalchemy import select as _sel
+        from app.db.models import Agent as _Agent, AgentTrigger as _AgentTrigger
+        result = await db.execute(
+            _sel(_AgentTrigger)
+            .join(_Agent, _Agent.id == _AgentTrigger.agent_id)
+            .where(_AgentTrigger.enabled == True, _Agent.status == "active")  # noqa: E712
+        )
+        agent_triggers = result.scalars().all()
+    for trig in agent_triggers:
+        register_agent_trigger(trig, loop)
+    logger.info("Loaded %d agent trigger(s)", len(agent_triggers))
+
     # Start WhatsApp polling loop if WhatsApp is configured
     if app_config.whatsapp_enabled():
         if _wa_poll_task is None or _wa_poll_task.done():
@@ -1144,6 +1216,22 @@ async def _describe_whatsapp_image(chat_id: str, message_id: str) -> str:
     except Exception as exc:
         logger.warning("_describe_whatsapp_image failed: %s", exc)
         return ""
+
+
+def _build_wa_trusted_block(wa_context: dict) -> str:
+    history = wa_context.get("recent_history", "")
+    history_block = f"\n\nRecent chat history (last {_WA_HISTORY_COUNT} messages, oldest first):\n{history}" if history else ""
+    return (
+        f"\n\n━━━ TRUSTED TRIGGER CONTEXT ━━━"
+        f"\nchat_id: {wa_context.get('chat_id', '')}"
+        f"\nsender_id: {wa_context.get('sender_id', '')}"
+        f"\nsender_name: {wa_context.get('sender_name', '')}"
+        f"\ngroup_name: {wa_context.get('group_name', '')}"
+        f"\nmessage_type: {wa_context.get('message_type', 'text')}"
+        f"\nmessage_text: {wa_context.get('message_text', '')}"
+        f"{history_block}"
+        f"\n━━━ END TRUSTED CONTEXT ━━━"
+    )
 
 
 async def _fire_whatsapp_automation(automation_id: int, wa_context: dict) -> None:
@@ -1447,6 +1535,34 @@ async def on_whatsapp_message_fire(wa_context: dict) -> None:
                     automation.id, chat_id,
                 )
                 asyncio.create_task(_fire_whatsapp_smart_reply(automation.id, wa_context))
+
+    # Also wake agents whose whatsapp triggers match this chat
+    async with AsyncSessionLocal() as db:
+        from sqlalchemy import select as _sel
+        from app.db.models import Agent as _Agent, AgentTrigger as _AgentTrigger
+        result = await db.execute(
+            _sel(_AgentTrigger, _Agent)
+            .join(_Agent, _Agent.id == _AgentTrigger.agent_id)
+            .where(
+                _AgentTrigger.enabled == True,  # noqa: E712
+                _Agent.status == "active",
+                _AgentTrigger.trigger_type.in_(["whatsapp_group_new", "whatsapp_keyword_match"]),
+            )
+        )
+        rows = result.all()
+    for trig, agent in rows:
+        cfg = json.loads(trig.trigger_config_json)
+        target = cfg.get("chat_id", "")
+        if trig.trigger_type == "whatsapp_group_new" and (not target or target == chat_id):
+            from app.agents.agent_runtime import fire_agent
+            trusted = _build_wa_trusted_block(wa_context)
+            asyncio.create_task(fire_agent(agent.id, trig.id, {"trusted_block": trusted, **wa_context}))
+        elif trig.trigger_type == "whatsapp_keyword_match":
+            kws = [k.strip().lower() for k in cfg.get("keywords", "").replace(",", " ").split() if k.strip()]
+            if any(k in message_text.lower() for k in kws):
+                from app.agents.agent_runtime import fire_agent
+                trusted = _build_wa_trusted_block(wa_context)
+                asyncio.create_task(fire_agent(agent.id, trig.id, {"trusted_block": trusted, **wa_context}))
 
 
 async def on_whatsapp_outgoing(

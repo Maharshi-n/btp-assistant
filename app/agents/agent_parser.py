@@ -24,10 +24,19 @@ DEFERRED_TRIGGER_TYPES = {
 }
 
 _INTERVIEW_SYSTEM = (
-    "You set up a long-lived AI agent for the user. Given a role description, ask ONLY "
-    "the clarifying questions you genuinely need to make the agent a master of this role "
-    "(e.g. thresholds, schedule, which data, where to notify). Skip anything inferable. "
-    "Output ONLY a JSON object: {\"questions\": [\"...\", ...]}. Empty list if nothing is needed."
+    "You set up a long-lived AI agent. Given a role description, ask the FEWEST possible "
+    "clarifying questions — ONLY things you genuinely cannot infer and that would change what "
+    "the agent does. Aim for 0-2 questions; never more than 3.\n"
+    "INFER sensible defaults instead of asking — do NOT ask about any of these:\n"
+    "- timing tolerance / exact-vs-approximate intervals (assume best-effort)\n"
+    "- whether to run indefinitely or stop (assume indefinitely until the user disables it)\n"
+    "- retry/error-handling behaviour (assume best-effort, skip on failure)\n"
+    "- start time / timezone (assume start now; IST unless stated)\n"
+    "- whether a message is always the same (assume yes unless the role implies otherwise)\n"
+    "ONLY ask for genuinely missing specifics the agent cannot work without — e.g. WHICH "
+    "Telegram chat / WhatsApp group / recipient, a threshold value, or which data source, when "
+    "the role doesn't say. If the role is already actionable, return an empty list.\n"
+    "Output ONLY a JSON object: {\"questions\": [\"...\", ...]}."
 )
 
 _FINALIZE_SYSTEM = (

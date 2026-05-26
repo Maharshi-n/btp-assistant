@@ -49,7 +49,7 @@
   border-color: var(--glass-bdr) !important;
   box-shadow: var(--glass-shadow) !important;
 }
-    [data-theme="dark"] .bg-gray-50           { background-color: #0f172a !important; }
+    [data-theme="dark"] .bg-gray-50           { background-color: var(--bg-canvas) !important; }
     [data-theme="dark"] .bg-gray-100          { background-color: #334155 !important; }
     [data-theme="dark"] .bg-gray-200          { background-color: #475569 !important; }
     [data-theme="dark"] .hover\:bg-gray-50:hover  { background-color: #1e293b !important; }
@@ -453,6 +453,74 @@
       border-bottom: 1px solid var(--glass-bdr) !important;
       box-shadow: none !important;
     }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       GENERIC PAGE POLISH (dark) — applies to all inner pages via shared
+       Tailwind patterns: min-h-screen.bg-gray-50 page, bg-white.border-b
+       headers, section.bg-white cards, card sub-headers.
+       ═════════════════════════════════════════════════════════════════════ */
+
+    /* Page canvas: pure black + the same soft top aura as chat */
+    [data-theme="dark"] .min-h-screen.bg-gray-50 {
+      background-color: var(--bg-canvas) !important;
+      background-image:
+        radial-gradient(55% 40% at 50% -6%, rgba(59,130,246,0.10), transparent 70%),
+        radial-gradient(35% 35% at 90% 4%, rgba(139,92,246,0.07), transparent 70%);
+      background-attachment: fixed;
+    }
+
+    /* Inner-page top bars: quiet glassy header, sticky feel, no hard shadow */
+    [data-theme="dark"] header.bg-white.border-b {
+      background-color: rgba(10,10,12,0.6) !important;
+      backdrop-filter: blur(12px) saturate(120%);
+      -webkit-backdrop-filter: blur(12px) saturate(120%);
+      border-bottom: 1px solid var(--glass-bdr) !important;
+      box-shadow: none !important;
+    }
+
+    /* Card sections: more rounded, deeper glass, softer hairline.
+       (.bg-white already gets glass; this refines radius + lift for cards.) */
+    [data-theme="dark"] section.bg-white,
+    [data-theme="dark"] .bg-white.rounded-2xl,
+    [data-theme="dark"] .bg-white.rounded-xl {
+      border-radius: 18px !important;
+      border: 1px solid var(--glass-bdr) !important;
+      box-shadow: 0 10px 34px rgba(0,0,0,0.45) !important;
+    }
+
+    /* Card sub-headers (the "bg-gray-50 border-b" strip atop a card) */
+    [data-theme="dark"] section.bg-white > .bg-gray-50.border-b,
+    [data-theme="dark"] .bg-white > .bg-gray-50.border-b {
+      background-color: rgba(255,255,255,0.025) !important;
+      border-bottom: 1px solid var(--glass-bdr) !important;
+    }
+
+    /* Primary buttons across pages get the accent glow on hover (action buttons
+       only — toggle tracks are .rounded-full and were already carved out). */
+    [data-theme="dark"] button.bg-blue-600:not(.rounded-full),
+    [data-theme="dark"] a.bg-blue-600 {
+      background: linear-gradient(140deg, #3b82f6, #6366f1) !important;
+      box-shadow: 0 4px 14px rgba(59,130,246,0.30);
+    }
+    [data-theme="dark"] button.bg-blue-600:not(.rounded-full):hover,
+    [data-theme="dark"] a.bg-blue-600:hover {
+      box-shadow: 0 0 0 3px rgba(59,130,246,0.16), 0 8px 24px rgba(59,130,246,0.5);
+      transform: translateY(-1px);
+    }
+
+    /* Secondary gray buttons: subtle glass */
+    [data-theme="dark"] button.bg-gray-100,
+    [data-theme="dark"] a.bg-gray-100 {
+      background-color: rgba(255,255,255,0.05) !important;
+      border: 1px solid var(--glass-bdr);
+    }
+    [data-theme="dark"] button.bg-gray-100:hover,
+    [data-theme="dark"] a.bg-gray-100:hover { background-color: rgba(255,255,255,0.09) !important; }
+
+    /* Tables (audit, whatsapp history): zebra + hairlines tuned for black */
+    [data-theme="dark"] table thead { background-color: rgba(255,255,255,0.03) !important; }
+    [data-theme="dark"] table tbody tr { border-color: var(--glass-bdr) !important; }
+    [data-theme="dark"] table tbody tr:hover { background-color: rgba(255,255,255,0.025) !important; }
 
     /* Reduced-motion: respect the user's OS setting */
     @media (prefers-reduced-motion: reduce) {

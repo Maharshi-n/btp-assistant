@@ -48,6 +48,8 @@ Thumbs.db
 .agents/
 .playwright-mcp/
 docs/
+tools/
+*.png
 planchat.txt
 thischat.txt
 WHATSAPP_INTEGRATION_PLAN.md

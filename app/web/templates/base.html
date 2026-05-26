@@ -266,7 +266,9 @@
        ═════════════════════════════════════════════════════════════════════ */
 
     :root {
-      --raion-col: 760px;          /* reading column width */
+      /* Conversation width: fill most of the pane, leave ~3rem each side,
+         cap at 1100px on very wide screens so lines don't get unreadable. */
+      --raion-col: min(1100px, 100% - 5rem);
       --raion-ease: cubic-bezier(.22,.61,.36,1);
     }
 

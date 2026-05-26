@@ -104,9 +104,18 @@
     [data-theme="dark"] input,
     [data-theme="dark"] textarea,
     [data-theme="dark"] select {
-      background-color: #1e293b !important;
-      border-color: #475569 !important;
-      color: #e2e8f0 !important;
+      background-color: rgba(255,255,255,0.04) !important;
+      border-color: var(--glass-bdr) !important;
+      color: var(--txt-hi) !important;
+      transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease;
+    }
+    [data-theme="dark"] input:focus,
+    [data-theme="dark"] textarea:focus,
+    [data-theme="dark"] select:focus {
+      outline: none !important;
+      border-color: var(--accent) !important;
+      box-shadow: var(--accent-glow) !important;
+      background-color: rgba(255,255,255,0.06) !important;
     }
     [data-theme="dark"] input::placeholder,
     [data-theme="dark"] textarea::placeholder { color: #64748b !important; }

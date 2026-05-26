@@ -59,6 +59,22 @@
     [data-theme="dark"] .hover\:bg-gray-100:hover { background-color: #334155 !important; }
     [data-theme="dark"] .hover\:bg-gray-200:hover { background-color: #475569 !important; }
 
+    /* Sidebar — deep black with faint right-edge sheen */
+    [data-theme="dark"] #sidebar {
+      background-color: var(--bg-raised) !important;
+      border-right: 1px solid var(--glass-bdr);
+      box-shadow: inset -1px 0 0 rgba(255,255,255,0.03);
+    }
+    [data-theme="dark"] #sidebar .bg-gray-800,
+    [data-theme="dark"] #nav-menu {
+      background-color: rgba(20,20,24,0.96) !important;
+      border-color: var(--glass-bdr) !important;
+    }
+    [data-theme="dark"] #sidebar .bg-gray-700 { background-color: rgba(255,255,255,0.06) !important; }
+    [data-theme="dark"] #sidebar .hover\:bg-gray-700:hover,
+    [data-theme="dark"] #sidebar .hover\:bg-gray-600:hover { background-color: rgba(255,255,255,0.10) !important; }
+    [data-theme="dark"] #sidebar .border-gray-700 { border-color: var(--glass-bdr) !important; }
+
     /* Text — shifted significantly brighter in dark mode */
     [data-theme="dark"] .text-gray-900        { color: #f8fafc !important; }
     [data-theme="dark"] .text-gray-800        { color: #f1f5f9 !important; }

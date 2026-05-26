@@ -34,6 +34,7 @@ from app.web.routes.ws import router as ws_router
 from app.web.routes.workspaces import router as workspaces_router
 from app.web.routes.whatsapp import router as whatsapp_router
 from app.web.routes.databases import router as databases_router
+from app.web.routes.agents import router as agents_router
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -79,6 +80,7 @@ app.include_router(telegram_commands_router)
 app.include_router(workspaces_router)
 app.include_router(whatsapp_router)
 app.include_router(databases_router)
+app.include_router(agents_router)
 
 
 @app.exception_handler(NotAuthenticated)
@@ -94,6 +96,15 @@ async def on_startup() -> None:
     await seed_primary_workspace()
     await init_supervisor()
     await start_automations_runtime()
+    try:
+        from app.automations.runtime import get_scheduler
+        from apscheduler.triggers.cron import CronTrigger as _CronTrigger
+        sched = get_scheduler()
+        if sched and not sched.get_job("agent_budget_reset"):
+            sched.add_job(_reset_agent_budgets, trigger=_CronTrigger(hour=0, minute=0),
+                          id="agent_budget_reset", replace_existing=True)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not register agent budget reset: %s", exc)
     await _reregister_telegram_webhook()
     await _warm_mcp_manager()
     await _register_scheduled_tasks()
@@ -110,6 +121,15 @@ async def on_startup() -> None:
         await reset_stuck_scans()
     except Exception as exc:
         logging.getLogger(__name__).warning("DB startup error: %s", exc)
+
+
+async def _reset_agent_budgets() -> None:
+    from sqlalchemy import update
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import Agent
+    async with AsyncSessionLocal() as db:
+        await db.execute(update(Agent).values(fires_today=0))
+        await db.commit()
 
 
 async def _reregister_telegram_webhook() -> None:

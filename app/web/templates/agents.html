@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="max-w-4xl mx-auto p-6">
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold">Agents</h1>
+    <button onclick="openCreate()" class="bg-blue-600 text-white px-4 py-2 rounded">New Agent</button>
+  </div>
+
+  <div id="agent-list" class="space-y-3">
+    {% for a in agents %}
+    <div class="border rounded p-4 flex items-center justify-between">
+      <div>
+        <div class="font-semibold">{{ a.name }}</div>
+        <div class="text-sm text-gray-500">{{ a.role_description[:120] }}</div>
+        <div class="text-xs mt-1">Status: <span class="font-mono">{{ a.status }}</span></div>
+      </div>
+      <div class="space-x-2">
+        {% if a.status == 'active' %}
+        <button onclick="pauseAgent({{ a.id }})" class="px-3 py-1 border rounded">Pause</button>
+        {% else %}
+        <button onclick="resumeAgent({{ a.id }})" class="px-3 py-1 border rounded">Resume</button>
+        {% endif %}
+        <button onclick="viewMemory({{ a.id }})" class="px-3 py-1 border rounded">Memory</button>
+        <button onclick="viewRuns({{ a.id }})" class="px-3 py-1 border rounded">Activity</button>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div id="create-modal" class="hidden fixed inset-0 bg-black/40 flex items-center justify-center">
+    <div class="bg-white dark:bg-gray-800 p-6 rounded w-[600px] max-h-[80vh] overflow-auto">
+      <h2 class="text-lg font-bold mb-3">Create Agent</h2>
+      <input id="agent-name" placeholder="Agent name" class="w-full border p-2 mb-2 rounded"/>
+      <textarea id="agent-role" placeholder="You are an agent for..." rows="4" class="w-full border p-2 mb-2 rounded"></textarea>
+      <button onclick="askInterview()" class="bg-gray-700 text-white px-3 py-2 rounded">Next: questions</button>
+      <div id="interview" class="mt-4 hidden">
+        <div id="questions" class="text-sm mb-2"></div>
+        <textarea id="agent-answers" placeholder="Your answers" rows="4" class="w-full border p-2 mb-2 rounded"></textarea>
+        <button onclick="createAgent()" class="bg-blue-600 text-white px-4 py-2 rounded">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function openCreate(){ document.getElementById('create-modal').classList.remove('hidden'); }
+async function askInterview(){
+  const role = document.getElementById('agent-role').value;
+  const r = await fetch('/api/agents/interview', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({role_description: role})});
+  const data = await r.json();
+  document.getElementById('questions').innerHTML = '<ul class="list-disc pl-5">' + data.questions.map(q=>`<li>${q}</li>`).join('') + '</ul>';
+  document.getElementById('interview').classList.remove('hidden');
+}
+async function createAgent(){
+  const body = {
+    name: document.getElementById('agent-name').value,
+    role_description: document.getElementById('agent-role').value,
+    interview_answers: document.getElementById('agent-answers').value,
+  };
+  const r = await fetch('/api/agents', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  if (r.ok) location.reload(); else alert('Create failed');
+}
+async function pauseAgent(id){ await fetch(`/api/agents/${id}/pause`,{method:'POST'}); location.reload(); }
+async function resumeAgent(id){ await fetch(`/api/agents/${id}/resume`,{method:'POST'}); location.reload(); }
+async function viewMemory(id){
+  const r = await fetch(`/api/agents/${id}/memory`); const d = await r.json();
+  const edited = prompt('Agent memory (edit to save):', d.memory);
+  if (edited !== null) { await fetch(`/api/agents/${id}/memory`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({memory:edited})}); }
+}
+async function viewRuns(id){
+  const r = await fetch(`/api/agents/${id}/runs`); const d = await r.json();
+  alert(d.map(x=>`[${x.status}] ${x.summary||''}`).join('\n') || 'No activity yet');
+}
+</script>
+{% endblock %}

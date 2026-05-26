@@ -270,19 +270,6 @@
       --raion-ease: cubic-bezier(.22,.61,.36,1);
     }
 
-    /* Welcome chips — base (light) styling so they aren't bare text in light mode.
-       Dark mode refines these further below. */
-    .raion-chips { display: flex; flex-wrap: wrap; gap: .6rem; justify-content: center; max-width: 540px; }
-    .raion-chip {
-      border: 1px solid #e5e7eb;
-      background: #fff;
-      color: #374151;
-      border-radius: 9999px;
-      padding: .5rem 1rem; font-size: .85rem;
-      cursor: pointer;
-      transition: all .18s ease;
-    }
-    .raion-chip:hover { border-color: #93c5fd; background: #eff6ff; color: #1d4ed8; }
 
     /* Ambient: a soft radial aura behind the whole chat canvas */
     [data-theme="dark"] .raion-ambient {
@@ -402,51 +389,52 @@
     [data-theme="dark"] .raion-composer #send-btn,
     [data-theme="dark"] .raion-composer #attach-btn,
     [data-theme="dark"] .raion-composer #stop-btn {
-      width: 40px; height: 40px;
+      width: 38px; height: 38px;
+      min-width: 38px;
       border-radius: var(--raion-pill) !important;
       display: grid; place-items: center;
       padding: 0 !important;
+      border: 0 !important;
     }
     [data-theme="dark"] .raion-composer #attach-btn {
       background: transparent !important;
-      border: 0 !important;
       color: var(--txt-lo) !important;
     }
     [data-theme="dark"] .raion-composer #attach-btn:hover { color: var(--txt-hi) !important; background: rgba(255,255,255,0.06) !important; }
     [data-theme="dark"] .raion-composer #send-btn {
       background: linear-gradient(140deg, #3b82f6, #6366f1) !important;
-      box-shadow: 0 6px 18px rgba(59,130,246,0.45);
+      box-shadow: 0 4px 14px rgba(59,130,246,0.4);
     }
-    [data-theme="dark"] .raion-composer #send-btn:hover {
-      box-shadow: 0 0 0 4px rgba(59,130,246,0.18), 0 8px 26px rgba(59,130,246,0.6);
+    [data-theme="dark"] .raion-composer #send-btn:hover:not(:disabled) {
+      box-shadow: 0 0 0 4px rgba(59,130,246,0.16), 0 6px 20px rgba(59,130,246,0.55);
+      transform: translateY(-1px);
+    }
+    [data-theme="dark"] .raion-composer #send-btn:disabled {
+      background: rgba(255,255,255,0.08) !important;
+      box-shadow: none !important;
+      color: var(--txt-lo) !important;
+    }
+    /* Stop: soft red circle with gentle glow, clearly a "stop" affordance */
+    [data-theme="dark"] .raion-composer #stop-btn {
+      background: linear-gradient(140deg, #ef4444, #dc2626) !important;
+      box-shadow: 0 4px 14px rgba(239,68,68,0.4);
+    }
+    [data-theme="dark"] .raion-composer #stop-btn:hover {
+      box-shadow: 0 0 0 4px rgba(239,68,68,0.16), 0 6px 20px rgba(239,68,68,0.55);
       transform: translateY(-1px);
     }
 
     /* Calm welcome state */
-    [data-theme="dark"] .raion-welcome { gap: 1.25rem !important; }
+    [data-theme="dark"] .raion-welcome { gap: .75rem !important; }
     [data-theme="dark"] .raion-welcome-title {
       font-size: 2.4rem; font-weight: 600; letter-spacing: -0.02em;
+      line-height: 1.25;            /* room so gradient descenders aren't clipped */
+      padding: 0.1em 0.05em 0.15em; /* extra breathing room around clipped text */
       background: linear-gradient(120deg, #f5f6fa 30%, #93b4ff 75%, #b79bff);
       -webkit-background-clip: text; background-clip: text;
       -webkit-text-fill-color: transparent; color: transparent;
     }
     [data-theme="dark"] .raion-welcome-sub { color: var(--txt-lo) !important; font-size: .95rem; }
-    [data-theme="dark"] .raion-chips { display: flex; flex-wrap: wrap; gap: .6rem; justify-content: center; max-width: 540px; }
-    [data-theme="dark"] .raion-chip {
-      border: 1px solid var(--glass-bdr);
-      background: rgba(255,255,255,0.03);
-      color: var(--txt-mid);
-      border-radius: var(--raion-pill);
-      padding: .5rem 1rem; font-size: .85rem;
-      cursor: pointer;
-      transition: all .18s var(--raion-ease);
-    }
-    [data-theme="dark"] .raion-chip:hover {
-      border-color: rgba(59,130,246,0.5);
-      background: rgba(59,130,246,0.10);
-      color: var(--txt-hi);
-      transform: translateY(-1px);
-    }
 
     /* Sidebar polish — calmer thread list */
     [data-theme="dark"] #sidebar .thread-item { border-radius: 10px; transition: background-color .16s var(--raion-ease); }
@@ -530,6 +518,25 @@
     }
     [data-theme="dark"] button.bg-gray-100:hover,
     [data-theme="dark"] a.bg-gray-100:hover { background-color: rgba(255,255,255,0.09) !important; }
+
+    /* Native <select> dropdown option list — force dark bg + light text
+       (otherwise the OS renders white-on-white in dark mode) */
+    [data-theme="dark"] select option,
+    [data-theme="dark"] select optgroup {
+      background-color: #16161c !important;
+      color: var(--txt-hi) !important;
+    }
+
+    /* Bright "-100" badge backgrounds (e.g. DB-type chips) — tone down for dark.
+       Keep the coloured text readable on a soft tinted chip. */
+    [data-theme="dark"] .bg-blue-100   { background-color: rgba(59,130,246,0.18) !important; }
+    [data-theme="dark"] .bg-indigo-100 { background-color: rgba(99,102,241,0.18) !important; }
+    [data-theme="dark"] .bg-orange-100 { background-color: rgba(249,115,22,0.18) !important; }
+    [data-theme="dark"] .bg-green-100  { background-color: rgba(34,197,94,0.18) !important; }
+    [data-theme="dark"] .bg-red-100    { background-color: rgba(239,68,68,0.18) !important; }
+    [data-theme="dark"] .text-blue-700   { color: #93c5fd !important; }
+    [data-theme="dark"] .text-indigo-700 { color: #a5b4fc !important; }
+    [data-theme="dark"] .text-orange-700 { color: #fdba74 !important; }
 
     /* Tables (audit, whatsapp history): zebra + hairlines tuned for black */
     [data-theme="dark"] table thead { background-color: rgba(255,255,255,0.03) !important; }

@@ -258,12 +258,6 @@
       <div id="welcome-msg" class="raion-welcome flex flex-col items-center justify-center flex-1 text-center gap-2">
         <p class="raion-welcome-title text-2xl font-semibold text-gray-700">Hey, Maharshi</p>
         <p class="raion-welcome-sub text-gray-400 text-sm">What can I help you with today?</p>
-        <div class="raion-chips">
-          <button type="button" class="raion-chip" onclick="useSuggestion(this)">Summarize my latest emails</button>
-          <button type="button" class="raion-chip" onclick="useSuggestion(this)">Query the college database</button>
-          <button type="button" class="raion-chip" onclick="useSuggestion(this)">Draft a WhatsApp reply</button>
-          <button type="button" class="raion-chip" onclick="useSuggestion(this)">Create an automation</button>
-        </div>
       </div>
     </div>
 
@@ -319,9 +313,13 @@
           id="stop-btn"
           type="button"
           onclick="stopGeneration()"
+          title="Stop generating"
+          aria-label="Stop generating"
           class="hidden shrink-0 rounded-xl bg-red-500 text-white px-4 py-2 text-sm
                  hover:bg-red-600 transition-colors">
-          Stop
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="6" width="12" height="12" rx="2.5"/>
+          </svg>
         </button>
 
         <button
@@ -1246,14 +1244,6 @@
     el.style.height = Math.min(el.scrollHeight, 160) + 'px';
   }
 
-  // ─── Welcome suggestion chips ─────────────────────────────────────────────
-  function useSuggestion(btn) {
-    const input = document.getElementById('msg-input');
-    if (!input || input.disabled) return;
-    input.value = btn.textContent.trim();
-    input.focus();
-    autoResize(input);
-  }
 
   // ─── Skill autocomplete ───────────────────────────────────────────────────
   let _skillsCache = null;

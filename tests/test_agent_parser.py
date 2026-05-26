@@ -16,6 +16,14 @@ def test_validate_triggers_rejects_unknown_type():
         agent_parser.validate_triggers([{"trigger_type": "telepathy", "trigger_config": {}}])
 
 
+def test_validate_triggers_rejects_deferred_unwired_types():
+    # Trigger types that aren't wired to fire_agent yet must be rejected at
+    # creation so users can't make an agent that silently never fires.
+    for tt in ("gmail_any_new", "whatsapp_outgoing_new", "fs_new_in_folder"):
+        with pytest.raises(ValueError):
+            agent_parser.validate_triggers([{"trigger_type": tt, "trigger_config": {}}])
+
+
 def test_validate_triggers_rejects_bad_cron():
     with pytest.raises(ValueError):
         agent_parser.validate_triggers([{"trigger_type": "cron", "trigger_config": {"cron": "not a cron"}}])

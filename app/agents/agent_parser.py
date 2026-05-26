@@ -7,10 +7,20 @@ from openai import AsyncOpenAI
 
 import app.config as app_config
 
+# Only trigger types that actually WAKE an agent today are allowed at creation
+# time — otherwise a user could create an agent that silently never fires.
+# fire_agent is wired for cron (scheduler) and the two incoming-WhatsApp types
+# dispatched in app/automations/runtime.on_whatsapp_message_fire.
 VALID_TRIGGER_TYPES = {
-    "cron", "gmail_any_new", "gmail_new_from_sender", "gmail_keyword_match",
-    "fs_new_in_folder", "whatsapp_group_new", "whatsapp_keyword_match",
-    "whatsapp_outgoing_new", "whatsapp_smart_reply",
+    "cron", "whatsapp_group_new", "whatsapp_keyword_match",
+}
+
+# Modelled + validated by the automation layer but NOT yet wired to fire_agent
+# (gmail polling, whatsapp outgoing/smart-reply, fs). Kept here so re-enabling is
+# a one-line move into VALID_TRIGGER_TYPES once the dispatch wiring lands.
+DEFERRED_TRIGGER_TYPES = {
+    "gmail_any_new", "gmail_new_from_sender", "gmail_keyword_match",
+    "fs_new_in_folder", "whatsapp_outgoing_new", "whatsapp_smart_reply",
 }
 
 _INTERVIEW_SYSTEM = (

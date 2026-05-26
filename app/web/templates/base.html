@@ -270,6 +270,20 @@
       --raion-ease: cubic-bezier(.22,.61,.36,1);
     }
 
+    /* Welcome chips — base (light) styling so they aren't bare text in light mode.
+       Dark mode refines these further below. */
+    .raion-chips { display: flex; flex-wrap: wrap; gap: .6rem; justify-content: center; max-width: 540px; }
+    .raion-chip {
+      border: 1px solid #e5e7eb;
+      background: #fff;
+      color: #374151;
+      border-radius: 9999px;
+      padding: .5rem 1rem; font-size: .85rem;
+      cursor: pointer;
+      transition: all .18s ease;
+    }
+    .raion-chip:hover { border-color: #93c5fd; background: #eff6ff; color: #1d4ed8; }
+
     /* Ambient: a soft radial aura behind the whole chat canvas */
     [data-theme="dark"] .raion-ambient {
       position: relative;

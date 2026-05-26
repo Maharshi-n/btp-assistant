@@ -9,7 +9,7 @@
   <script>
     // Apply theme before paint to avoid flash
     (function() {
-      const t = localStorage.getItem('theme') || 'light';
+      const t = localStorage.getItem('theme') || 'dark';
       document.getElementById('html-root').setAttribute('data-theme', t);
       if (t === 'dark') document.getElementById('html-root').classList.add('dark');
     })();

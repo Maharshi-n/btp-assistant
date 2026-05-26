@@ -1,8 +1,6 @@
-"""fire_agent: wake an agent on a trigger, run it in the agent's rolling thread
-(reused across fires; created on first fire), log the run, and schedule debounced
-memory distillation. Mirrors app/automations/runtime._fire_automation but adds
-agent identity, memory, budget, and a per-agent lock. Agent threads are tagged
-with agent_id so they stay out of RAION's main thread list.
+"""fire_agent: wake an agent on a trigger, run it in a fresh thread, log the run,
+and schedule debounced memory distillation. Mirrors app/automations/runtime._fire_automation
+but adds agent identity, memory, budget, and a per-agent lock.
 """
 from __future__ import annotations
 
@@ -83,19 +81,10 @@ async def fire_agent(agent_id: int, trigger_id: int | None, trigger_context: dic
                 logger.warning("Agent %d over daily budget (%d)", agent_id, agent.daily_fire_budget)
                 return "skipped:budget"
 
-            # Reuse the agent's rolling thread if it already has one; create on
-            # first fire only. The agent's continuity lives in this thread + its
-            # memory file. (Per-source conversational threading is deferred until
-            # an incoming-chat agent trigger exists.) The thread is tagged with
-            # agent_id so it stays out of the main thread list (see list_threads).
-            from sqlalchemy import select as _sel
-            thread = (await db.execute(
-                _sel(Thread).where(Thread.agent_id == agent_id).order_by(Thread.id.desc()).limit(1)
-            )).scalars().first()
-            if thread is None:
-                thread = Thread(title=f"[Agent] {agent.name[:50]}", model=agent.model, agent_id=agent_id)
-                db.add(thread)
-                await db.flush()
+            # Fresh thread per fire — the agent never reads its own prior output.
+            thread = Thread(title=f"[Agent] {agent.name[:50]}", model=agent.model, agent_id=agent_id)
+            db.add(thread)
+            await db.flush()
 
             run = AgentRun(
                 agent_id=agent_id,

@@ -62,33 +62,6 @@ async def test_active_agent_fires_and_logs(db, monkeypatch):
     assert len(runs) == 1
 
 
-async def test_agent_reuses_rolling_thread_across_fires(db, monkeypatch):
-    from app.db.models import Thread
-    agent = await _make_agent(db)
-
-    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id):
-        return "ok"
-
-    monkeypatch.setattr(agent_runtime, "_invoke_graph", fake_invoke)
-    monkeypatch.setattr(agent_runtime, "_session_factory", lambda: _ctx(db))
-    monkeypatch.setattr(agent_runtime, "schedule_memory_distillation", lambda *a, **k: None)
-
-    await agent_runtime.fire_agent(agent.id, trigger_id=None, trigger_context={})
-    await agent_runtime.fire_agent(agent.id, trigger_id=None, trigger_context={})
-
-    # Two fires, but only ONE thread for this agent (rolling reuse), and both
-    # runs point at that same thread.
-    threads = (await db.execute(
-        Thread.__table__.select().where(Thread.agent_id == agent.id)
-    )).fetchall()
-    assert len(threads) == 1
-    runs = (await db.execute(
-        AgentRun.__table__.select().where(AgentRun.agent_id == agent.id)
-    )).fetchall()
-    assert len(runs) == 2
-    assert {r.thread_id for r in runs} == {threads[0].id}
-
-
 import contextlib
 
 

@@ -117,6 +117,59 @@ class AutomationRun(Base):
     thread_id: Mapped[int] = mapped_column(Integer, nullable=True, index=True)
 
 
+class Agent(Base):
+    __tablename__ = "agents"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    role_description: Mapped[str] = mapped_column(Text, nullable=False)
+    role_block: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(String(64), nullable=False, server_default="gpt-5.4-mini")
+    memory_model: Mapped[str] = mapped_column(String(64), nullable=False, server_default="gpt-4o-mini")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    memory_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    memory_watermark: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    daily_fire_budget: Mapped[int] = mapped_column(Integer, nullable=False, server_default="100")
+    fires_today: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        _DT, server_default=func.now(), nullable=False
+    )
+
+
+class AgentTrigger(Base):
+    __tablename__ = "agent_triggers"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(
+        ForeignKey("agents.id"), nullable=False, index=True
+    )
+    trigger_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    trigger_config_json: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        _DT, server_default=func.now(), nullable=False
+    )
+
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(
+        ForeignKey("agents.id"), nullable=False, index=True
+    )
+    trigger_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_triggers.id"), nullable=True
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        _DT, server_default=func.now(), nullable=False
+    )
+    finished_at: Mapped[datetime] = mapped_column(_DT, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")
+    thread_id: Mapped[int] = mapped_column(Integer, nullable=True, index=True)
+    trigger_summary: Mapped[str] = mapped_column(Text, nullable=True)
+
+
 class UserMemory(Base):
     __tablename__ = "user_memories"
 

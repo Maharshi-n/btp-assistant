@@ -61,6 +61,13 @@ async def test_active_agent_fires_and_logs(db, monkeypatch):
     )).fetchall()
     assert len(runs) == 1
 
+    # The fire thread must be tagged with agent_id so /switch into it runs AS the agent.
+    from app.db.models import Thread as _Thread
+    threads = (await db.execute(
+        _Thread.__table__.select().where(_Thread.agent_id == agent.id)
+    )).fetchall()
+    assert len(threads) == 1
+
 
 async def test_fire_passes_agent_id_and_frames_trigger_as_data(db, monkeypatch):
     agent = await _make_agent(db)

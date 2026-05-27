@@ -90,7 +90,10 @@ async def fire_agent(agent_id: int, trigger_id: int | None, trigger_context: dic
                 return "skipped:budget"
 
             # Fresh thread per fire — the agent never reads its own prior output.
-            thread = Thread(title=f"[Agent] {agent.name[:50]}", model=agent.model)
+            # Tag it with agent_id so that when the user /switches into it (web or
+            # Telegram) it runs AS this agent (role + memory). NOTE: this is a link
+            # only — these threads stay VISIBLE in the main list (no hide filter).
+            thread = Thread(title=f"[Agent] {agent.name[:50]}", model=agent.model, agent_id=agent_id)
             db.add(thread)
             await db.flush()
 

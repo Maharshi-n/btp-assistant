@@ -16,7 +16,7 @@ from app.agents.agent_parser import finalize_agent_spec, interview_questions
 from app.agents.agent_memory import agent_lock, _atomic_write, load_memory_file
 from app.automations.runtime import register_agent_trigger, unregister_agent_trigger
 from app.db.engine import get_db
-from app.db.models import Agent, AgentRun, AgentTrigger, User
+from app.db.models import Agent, AgentRun, AgentTrigger, Thread, User
 from app.web.deps import require_user
 
 logger = logging.getLogger(__name__)
@@ -120,6 +120,43 @@ async def delete_agent_record(db: AsyncSession, agent_id: int) -> None:
 async def agents_page(request: Request, db: AsyncSession = Depends(get_db), _u: User = Depends(require_user)):
     agents = (await db.execute(select(Agent).order_by(Agent.created_at.desc()))).scalars().all()
     return templates.TemplateResponse("agents.html", {"request": request, "agents": agents})
+
+
+@router.get("/agents/{agent_id}")
+async def agent_detail_page(agent_id: int, request: Request, db: AsyncSession = Depends(get_db), _u: User = Depends(require_user)):
+    agent = await db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(404, "Agent not found")
+    triggers = (await db.execute(
+        select(AgentTrigger).where(AgentTrigger.agent_id == agent_id)
+    )).scalars().all()
+    runs = (await db.execute(
+        select(AgentRun).where(AgentRun.agent_id == agent_id).order_by(AgentRun.started_at.desc()).limit(50)
+    )).scalars().all()
+    path = app_config.WORKSPACE_DIR / agent.memory_path
+    memory = load_memory_file(path)
+    return templates.TemplateResponse("agent_detail.html", {
+        "request": request,
+        "agent": agent,
+        "triggers": triggers,
+        "runs": runs,
+        "memory": memory,
+    })
+
+
+@router.post("/api/agents/{agent_id}/chat")
+async def api_new_agent_chat(agent_id: int, db: AsyncSession = Depends(get_db), _u: User = Depends(require_user)):
+    """Create a fresh chat thread linked to this agent and return its id.
+    The thread stays visible in the main list; the supervisor overlays the
+    agent's persona + memory because the thread carries agent_id."""
+    agent = await db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(404, "Agent not found")
+    thread = Thread(title=f"Chat with {agent.name[:40]}", model=agent.model, agent_id=agent_id)
+    db.add(thread)
+    await db.commit()
+    await db.refresh(thread)
+    return JSONResponse({"thread_id": thread.id})
 
 
 @router.post("/api/agents/interview")

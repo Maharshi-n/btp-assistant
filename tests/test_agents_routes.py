@@ -24,6 +24,24 @@ async def test_create_agent_persists_agent_and_triggers(db, monkeypatch):
     assert len(trigs) == 1
 
 
+async def test_new_agent_chat_creates_linked_thread(db, monkeypatch):
+    from app.db.models import Thread
+    agent = Agent(name="Chatty", role_description="r", role_block="b", memory_path="agents/c.md")
+    db.add(agent)
+    await db.flush()
+
+    # Call the endpoint function directly with our test session.
+    resp = await agents_routes.api_new_agent_chat(agent.id, db=db, _u=None)
+    import json as _json
+    body = _json.loads(resp.body)
+    tid = body["thread_id"]
+
+    thread = await db.get(Thread, tid)
+    assert thread is not None
+    assert thread.agent_id == agent.id  # thread is linked to the agent
+    assert thread.model == agent.model
+
+
 async def test_delete_agent_removes_agent_triggers_and_runs(db, monkeypatch):
     from datetime import datetime, timezone
     from app.db.models import AgentRun

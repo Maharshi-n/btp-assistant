@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="max-w-4xl mx-auto p-6 space-y-6">
+
+  <div class="flex items-center justify-between">
+    <div>
+      <a href="/agents" class="text-sm text-gray-500 hover:underline">← All agents</a>
+      <h1 class="text-2xl font-bold mt-1">{{ agent.name }}</h1>
+    </div>
+    <div class="space-x-2">
+      <button onclick="newChat()" class="bg-blue-600 text-white px-4 py-2 rounded">New chat with agent</button>
+      {% if agent.status == 'active' %}
+      <button onclick="setStatus('pause')" class="px-3 py-2 border rounded">Pause</button>
+      {% else %}
+      <button onclick="setStatus('resume')" class="px-3 py-2 border rounded">Resume</button>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Identity / config -->
+  <div class="border rounded p-4">
+    <h2 class="font-semibold mb-2">Details</h2>
+    <div class="grid grid-cols-2 gap-2 text-sm">
+      <div><span class="text-gray-500">Status:</span> <span class="font-mono">{{ agent.status }}</span></div>
+      <div><span class="text-gray-500">Model:</span> <span class="font-mono">{{ agent.model }}</span></div>
+      <div><span class="text-gray-500">Memory model:</span> <span class="font-mono">{{ agent.memory_model }}</span></div>
+      <div><span class="text-gray-500">Daily budget:</span> {{ agent.fires_today }} / {{ agent.daily_fire_budget }}</div>
+    </div>
+    <div class="mt-3">
+      <div class="text-gray-500 text-sm">Role</div>
+      <div class="text-sm whitespace-pre-wrap">{{ agent.role_description }}</div>
+    </div>
+  </div>
+
+  <!-- Triggers -->
+  <div class="border rounded p-4">
+    <h2 class="font-semibold mb-2">Triggers</h2>
+    {% if triggers %}
+    <ul class="text-sm space-y-1">
+      {% for t in triggers %}
+      <li class="font-mono">{{ t.trigger_type }} — {{ t.trigger_config_json }}{% if not t.enabled %} (disabled){% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="text-sm text-gray-500">No triggers.</div>
+    {% endif %}
+  </div>
+
+  <!-- Memory -->
+  <div class="border rounded p-4">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="font-semibold">Memory</h2>
+      <button onclick="saveMemory()" class="px-3 py-1 border rounded text-sm">Save</button>
+    </div>
+    <textarea id="memory" rows="12" class="w-full border p-2 rounded font-mono text-xs">{{ memory }}</textarea>
+  </div>
+
+  <!-- Activity -->
+  <div class="border rounded p-4">
+    <h2 class="font-semibold mb-2">Activity</h2>
+    {% if runs %}
+    <ul class="text-sm space-y-1">
+      {% for r in runs %}
+      <li>
+        <span class="font-mono">[{{ r.status }}]</span>
+        {% if r.thread_id %}<a href="/?thread={{ r.thread_id }}" class="text-blue-600 hover:underline">thread #{{ r.thread_id }}</a>{% endif %}
+        <span class="text-gray-500">{{ r.started_at.strftime('%Y-%m-%d %H:%M') if r.started_at else '' }}</span>
+        — {{ (r.trigger_summary or '')[:120] }}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="text-sm text-gray-500">No runs yet.</div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+const AGENT_ID = {{ agent.id }};
+async function newChat(){
+  const r = await fetch(`/api/agents/${AGENT_ID}/chat`, {method:'POST'});
+  if (!r.ok) { alert('Could not start chat'); return; }
+  const d = await r.json();
+  window.location.href = `/?thread=${d.thread_id}`;
+}
+async function setStatus(action){
+  await fetch(`/api/agents/${AGENT_ID}/${action}`, {method:'POST'});
+  location.reload();
+}
+async function saveMemory(){
+  const memory = document.getElementById('memory').value;
+  const r = await fetch(`/api/agents/${AGENT_ID}/memory`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({memory})});
+  alert(r.ok ? 'Memory saved' : 'Save failed');
+}
+</script>
+{% endblock %}

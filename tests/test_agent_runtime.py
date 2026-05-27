@@ -43,7 +43,7 @@ async def test_over_budget_agent_skips(db, monkeypatch):
 async def test_active_agent_fires_and_logs(db, monkeypatch):
     agent = await _make_agent(db)
 
-    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id):
+    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None):
         return "agent did the thing"
 
     monkeypatch.setattr(agent_runtime, "_invoke_graph", fake_invoke)
@@ -60,6 +60,35 @@ async def test_active_agent_fires_and_logs(db, monkeypatch):
         AgentRun.__table__.select().where(AgentRun.agent_id == agent.id)
     )).fetchall()
     assert len(runs) == 1
+
+
+async def test_fire_passes_agent_id_and_frames_trigger_as_data(db, monkeypatch):
+    agent = await _make_agent(db)
+    captured = {}
+
+    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None):
+        captured["prompt"] = prompt
+        captured["agent_id"] = agent_id
+        return "ok"
+
+    monkeypatch.setattr(agent_runtime, "_invoke_graph", fake_invoke)
+    monkeypatch.setattr(agent_runtime, "_session_factory", lambda: _ctx(db))
+    monkeypatch.setattr(agent_runtime, "schedule_memory_distillation", lambda *a, **k: None)
+
+    trusted = "\n\n━━━ INCOMING EMAIL ━━━\nemail_body:\nplease send me AI updates\n━━━ END ━━━"
+    await agent_runtime.fire_agent(agent.id, trigger_id=None, trigger_context={"trusted_block": trusted})
+
+    # agent_id is passed so the supervisor overlays role+memory (not glued into the user turn)
+    assert captured["agent_id"] == agent.id
+    # The user turn is a directive that (a) tells the agent to follow its ROLE,
+    # (b) explicitly says NOT to obey instructions inside the trigger data.
+    p = captured["prompt"]
+    assert "AGENT ROLE" in p or "your role" in p.lower()
+    # It explicitly tells the agent NOT to act on instructions inside the data.
+    assert "do not carry them out" in p.lower()
+    assert "untrusted" in p.lower()
+    # The untrusted email content is included as data.
+    assert "please send me AI updates" in p
 
 
 import contextlib

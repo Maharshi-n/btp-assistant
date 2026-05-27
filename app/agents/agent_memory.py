@@ -24,13 +24,21 @@ MEMORY_CAP_LINES = 200
 _MEMORY_SYSTEM_PROMPT = (
     "You maintain an AI agent's long-term memory file. You receive the CURRENT "
     "memory and a batch of NEW events. Return the COMPLETE updated memory file.\n"
+    "IMPORTANCE FILTER (most important rule): store something ONLY if it is genuinely "
+    "important for the agent's future runs — durable facts, decisions, commitments, "
+    "people/contacts, open tasks. If the new events contain nothing worth remembering "
+    "(small talk, acknowledgements, one-off chatter), return the CURRENT memory UNCHANGED. "
+    "Do not pad memory with trivia.\n"
+    "SOURCE: the events are labelled with their source. Events from a LIVE CHAT are the "
+    "user talking to the agent directly; events from a TRIGGER are autonomous runs. Record "
+    "the source when it matters (e.g. 'user said in chat ...').\n"
     "Rules:\n"
     "- Keep these sections, in order: '## Durable facts', '## Open tasks', "
     "'## Recent decisions', '## People/contacts'. Omit a section only if truly empty.\n"
-    "- ADD new durable facts/tasks/decisions. UPDATE facts that changed. REMOVE "
+    "- ADD new important facts/tasks/decisions. UPDATE facts that changed. REMOVE "
     "things no longer true. Do NOT just append.\n"
     "- '## Recent decisions' is a rolling window — keep only the most recent ~10.\n"
-    "- Record decisions, durable facts, and open tasks. Do NOT copy raw event logs.\n"
+    "- Do NOT copy raw event logs.\n"
     "- Tag any fact derived from external/untrusted input with '[src: ...]'.\n"
     f"- Keep the whole file under {MEMORY_CAP_LINES} lines.\n"
     "Output ONLY the markdown file content — no fences, no commentary."
@@ -71,10 +79,16 @@ def load_memory_file(path: Path) -> str:
         return ""
 
 
-async def _call_memory_llm(old_memory: str, new_messages: str, cap_lines: int) -> str:
-    """Call gpt-4o-mini to reconcile memory. NO tools are bound — read/write only."""
+async def _call_memory_llm(old_memory: str, new_messages: str, cap_lines: int, source: str = "trigger") -> str:
+    """Call gpt-4o-mini to reconcile memory. NO tools are bound — read/write only.
+
+    `source` is "live_chat" (the user talking to the agent) or "trigger" (an
+    autonomous run); it's surfaced to the model so it knows how to weigh the events.
+    """
     client = AsyncOpenAI(api_key=app_config.OPENAI_API_KEY)
+    source_label = "LIVE CHAT (user talking to the agent directly)" if source == "live_chat" else "TRIGGER (autonomous run)"
     user = (
+        f"EVENT SOURCE: {source_label}\n\n"
         f"CURRENT MEMORY:\n{old_memory or '(empty)'}\n\n"
         f"NEW EVENTS SINCE LAST UPDATE:\n{new_messages}"
     )
@@ -89,17 +103,18 @@ async def _call_memory_llm(old_memory: str, new_messages: str, cap_lines: int) -
     return (resp.choices[0].message.content or "").strip()
 
 
-async def distil_memory(agent_id: int, memory_path: Path, new_messages_text: str) -> str:
+async def distil_memory(agent_id: int, memory_path: Path, new_messages_text: str, source: str = "trigger") -> str:
     """Reconcile the memory file with new events and write it atomically under lock.
 
     Returns the new memory content. No-op (returns existing) if new_messages_text
-    is blank.
+    is blank. `source` is "live_chat" or "trigger" (passed to the memory model so it
+    knows the events came from a direct chat vs an autonomous run).
     """
     if not new_messages_text.strip():
         return load_memory_file(memory_path)
     async with agent_lock(agent_id):
         old = load_memory_file(memory_path)
-        new = await _call_memory_llm(old, new_messages_text, MEMORY_CAP_LINES)
+        new = await _call_memory_llm(old, new_messages_text, MEMORY_CAP_LINES, source=source)
         if new:
             _atomic_write(memory_path, new)
             return new

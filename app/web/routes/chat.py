@@ -457,6 +457,15 @@ async def _stream_langgraph(
                 await _run_auto_memory(last_user, assistant_content)
             except Exception:
                 pass
+
+            # If this is an agent chat, debounce-distil the conversation into the
+            # agent's memory (tagged live_chat; strict importance filter applies).
+            if _agent_id is not None:
+                try:
+                    from app.agents.agent_runtime import schedule_chat_distillation
+                    schedule_chat_distillation(_agent_id, thread_id)
+                except Exception:
+                    pass
         else:
             # Graph paused at interrupt — don't send "done", the UI waits for the
             # permission card to be resolved first.

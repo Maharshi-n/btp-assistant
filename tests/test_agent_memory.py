@@ -49,7 +49,7 @@ async def test_distil_memory_rewrites_via_llm(tmp_path, monkeypatch):
     target = tmp_path / "7_memory.md"
     target.write_text("## Durable facts\n- old fact", encoding="utf-8")
 
-    async def fake_llm(old_memory: str, new_messages: str, cap_lines: int) -> str:
+    async def fake_llm(old_memory: str, new_messages: str, cap_lines: int, source: str = "trigger") -> str:
         assert "old fact" in old_memory
         assert "NEW EVENT" in new_messages
         return "## Durable facts\n- old fact\n- new fact [src: test]"

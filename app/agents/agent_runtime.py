@@ -201,3 +201,49 @@ async def _run_distillation(agent_id: int, memory_path: Path) -> None:
             agent.memory_watermark = max_id
             await db.commit()
     _memory_timers.pop(agent_id, None)
+
+
+# Live-chat distillation: separate debounce keyed by chat thread so a user
+# chatting with an agent updates the SAME memory file, tagged source=live_chat.
+_chat_memory_timers: dict[int, asyncio.TimerHandle] = {}
+
+
+def schedule_chat_distillation(agent_id: int, thread_id: int) -> None:
+    """(Re)start the debounce timer for distilling a live agent-chat thread."""
+    existing = _chat_memory_timers.pop(thread_id, None)
+    if existing:
+        existing.cancel()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    handle = loop.call_later(
+        MEMORY_DEBOUNCE_SECONDS,
+        lambda: asyncio.create_task(_run_chat_distillation(agent_id, thread_id)),
+    )
+    _chat_memory_timers[thread_id] = handle
+
+
+async def _run_chat_distillation(agent_id: int, thread_id: int) -> None:
+    """Distil the recent messages of an agent-chat thread into the agent's memory,
+    tagged as a live chat (strict importance filter applies in the memory model)."""
+    from sqlalchemy import select
+    from app.db.models import Agent as _Agent
+
+    async with _session_factory() as db:
+        agent = await db.get(_Agent, agent_id)
+        if agent is None:
+            return
+        mem_path = _resolve_memory_path(agent.memory_path)
+        msgs = (await db.execute(
+            select(Message)
+            .where(Message.thread_id == thread_id)
+            .order_by(Message.id.desc())
+            .limit(12)
+        )).scalars().all()
+    msgs = list(reversed(msgs))
+    if not msgs:
+        return
+    new_text = "\n".join(f"[{m.role}] {m.content}" for m in msgs if m.content)
+    await distil_memory(agent_id, mem_path, new_text, source="live_chat")
+    _chat_memory_timers.pop(thread_id, None)

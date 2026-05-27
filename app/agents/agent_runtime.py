@@ -97,6 +97,19 @@ async def fire_agent(agent_id: int, trigger_id: int | None, trigger_context: dic
             db.add(thread)
             await db.flush()
 
+            # Persist the raw trigger context (the email/file/message that woke the
+            # agent — whatever it was) into the thread, so a later follow-up the user
+            # /switches into still has the ORIGINAL event in scope. Generic across all
+            # trigger types: trusted_block is built by each trigger source.
+            _trigger_block_persist = (trigger_context or {}).get("trusted_block", "")
+            if _trigger_block_persist.strip():
+                db.add(Message(
+                    thread_id=thread.id,
+                    role="user",
+                    content=_trigger_block_persist.strip(),
+                    metadata_json=json.dumps({"agent_id": agent_id, "trigger_context": True}),
+                ))
+
             run = AgentRun(
                 agent_id=agent_id,
                 trigger_id=trigger_id,

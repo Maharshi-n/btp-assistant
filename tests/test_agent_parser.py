@@ -16,12 +16,23 @@ def test_validate_triggers_rejects_unknown_type():
         agent_parser.validate_triggers([{"trigger_type": "telepathy", "trigger_config": {}}])
 
 
-def test_validate_triggers_rejects_deferred_unwired_types():
-    # Trigger types that aren't wired to fire_agent yet must be rejected at
-    # creation so users can't make an agent that silently never fires.
-    for tt in ("gmail_any_new", "whatsapp_outgoing_new", "fs_new_in_folder"):
+def test_validate_triggers_accepts_gmail_and_fs():
+    # gmail + fs are now wired to fire_agent, so they're valid at creation.
+    agent_parser.validate_triggers([{"trigger_type": "gmail_any_new", "trigger_config": {}}])
+    agent_parser.validate_triggers([{"trigger_type": "fs_new_in_folder", "trigger_config": {"folder": "downloads"}}])
+    agent_parser.validate_triggers([{"trigger_type": "gmail_keyword_match", "trigger_config": {"keywords": "invoice"}}])
+
+
+def test_validate_triggers_still_rejects_deferred_types():
+    # whatsapp outgoing / smart-reply are not wired for agents yet.
+    for tt in ("whatsapp_outgoing_new", "whatsapp_smart_reply"):
         with pytest.raises(ValueError):
             agent_parser.validate_triggers([{"trigger_type": tt, "trigger_config": {}}])
+
+
+def test_validate_triggers_fs_requires_folder():
+    with pytest.raises(ValueError):
+        agent_parser.validate_triggers([{"trigger_type": "fs_new_in_folder", "trigger_config": {}}])
 
 
 def test_validate_triggers_rejects_bad_cron():

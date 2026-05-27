@@ -817,7 +817,23 @@ def register_agent_trigger(trigger, loop) -> None:
             logger.info("Registered agent cron trigger %d (agent %d): %s", tid, aid, cron_expr)
 
     elif trigger.trigger_type in ("gmail_any_new", "gmail_new_from_sender", "gmail_keyword_match"):
-        logger.info("Agent gmail trigger %d (agent %d) registered (poll wiring TODO in follow-up)", tid, aid)
+        # Agent-owned gmail polling lives in app.agents.agent_triggers (separate
+        # from the automation engine). It fires fire_agent with the email context.
+        from app.agents.agent_triggers import gmail_poll as _agent_gmail_poll
+        job_id = _agent_job_id("gmail", tid)
+        if _scheduler and not _scheduler.get_job(job_id):
+            _scheduler.add_job(
+                _agent_gmail_poll,
+                trigger=IntervalTrigger(minutes=1),
+                id=job_id, replace_existing=True, args=[aid, tid],
+                max_instances=1, misfire_grace_time=60, coalesce=True,
+            )
+            logger.info("Registered agent gmail trigger %d (agent %d): %s", tid, aid, trigger.trigger_type)
+
+    elif trigger.trigger_type == "fs_new_in_folder":
+        from app.agents.agent_triggers import register_fs_watch
+        if _observer is not None:
+            register_fs_watch(_observer, aid, tid, config, loop)
 
     elif trigger.trigger_type in (
         "whatsapp_group_new", "whatsapp_keyword_match", "whatsapp_outgoing_new", "whatsapp_smart_reply",
@@ -828,12 +844,18 @@ def register_agent_trigger(trigger, loop) -> None:
 
 
 def unregister_agent_trigger(trigger_id: int) -> None:
-    global _scheduler
+    global _scheduler, _observer
     for kind in ("cron", "gmail"):
         job_id = _agent_job_id(kind, trigger_id)
         if _scheduler and _scheduler.get_job(job_id):
             _scheduler.remove_job(job_id)
             logger.info("Removed agent scheduler job %s", job_id)
+    # Filesystem watcher (if this trigger had one)
+    try:
+        from app.agents.agent_triggers import unregister_fs_watch
+        unregister_fs_watch(_observer, trigger_id)
+    except Exception as exc:
+        logger.warning("unregister_agent_trigger: fs cleanup failed for %d: %s", trigger_id, exc)
 
 
 # ---------------------------------------------------------------------------

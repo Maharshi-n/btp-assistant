@@ -7,20 +7,19 @@ from openai import AsyncOpenAI
 
 import app.config as app_config
 
-# Only trigger types that actually WAKE an agent today are allowed at creation
-# time — otherwise a user could create an agent that silently never fires.
-# fire_agent is wired for cron (scheduler) and the two incoming-WhatsApp types
-# dispatched in app/automations/runtime.on_whatsapp_message_fire.
+# Trigger types an agent can be created with. All of these are wired to
+# fire_agent: cron + WhatsApp via app/automations/runtime, gmail + fs via
+# app/agents/agent_triggers. Each WAKES the agent for real — no inert agents.
 VALID_TRIGGER_TYPES = {
-    "cron", "whatsapp_group_new", "whatsapp_keyword_match",
+    "cron",
+    "gmail_any_new", "gmail_new_from_sender", "gmail_keyword_match",
+    "fs_new_in_folder",
+    "whatsapp_group_new", "whatsapp_keyword_match",
 }
 
-# Modelled + validated by the automation layer but NOT yet wired to fire_agent
-# (gmail polling, whatsapp outgoing/smart-reply, fs). Kept here so re-enabling is
-# a one-line move into VALID_TRIGGER_TYPES once the dispatch wiring lands.
+# Recognized by the automation layer but NOT wired for agents yet.
 DEFERRED_TRIGGER_TYPES = {
-    "gmail_any_new", "gmail_new_from_sender", "gmail_keyword_match",
-    "fs_new_in_folder", "whatsapp_outgoing_new", "whatsapp_smart_reply",
+    "whatsapp_outgoing_new", "whatsapp_smart_reply",
 }
 
 _INTERVIEW_SYSTEM = (
@@ -43,10 +42,32 @@ _FINALIZE_SYSTEM = (
     "You finalize an AI agent's setup. Given the role description and the user's interview "
     "answers, output ONLY a JSON object:\n"
     "{\"role_block\": \"<the 'You are ...' identity/role text baked with the answers>\", "
-    "\"triggers\": [{\"trigger_type\": \"<one of the allowed types>\", \"trigger_config\": {...}}]}\n"
-    f"Allowed trigger_type values: {sorted(VALID_TRIGGER_TYPES)}.\n"
-    "cron config = {\"cron\": \"<5-field cron>\"}. An agent may have multiple triggers. "
-    "Never invent a trigger_type outside the allowed set."
+    "\"triggers\": [{\"trigger_type\": \"<type>\", \"trigger_config\": {...}}]}\n\n"
+    "CHOOSE THE TRIGGER TYPE THAT MATCHES THE EVENT. Do NOT default to cron for "
+    "event-driven tasks. Use cron ONLY for genuinely time-scheduled work.\n"
+    "Trigger types and when to use each:\n"
+    "- gmail_any_new — 'when any email/mail arrives', 'whenever I get an email'. "
+    "config: {} (empty).\n"
+    "- gmail_new_from_sender — 'when email from <person/address> arrives'. "
+    "config: {\"sender\": \"<email address>\"}.\n"
+    "- gmail_keyword_match — 'when an email about <topic> arrives'. "
+    "config: {\"keywords\": \"<Gmail search query, e.g. 'invoice OR payment'>\"}.\n"
+    "- fs_new_in_folder — 'watch a folder', 'when a new file appears in <folder>'. "
+    "config: {\"folder\": \"<path>\", \"file_extensions\": [\"pdf\", ...]}  (file_extensions optional; [] = all).\n"
+    "- whatsapp_group_new — 'when a message arrives in a WhatsApp group'. "
+    "config: {\"chat_id\": \"<group id ending @g.us, or '' for any>\"}.\n"
+    "- whatsapp_keyword_match — 'when a WhatsApp message mentions <X>'. "
+    "config: {\"keywords\": \"<space/comma separated>\"}.\n"
+    "- cron — recurring on a SCHEDULE ('every morning', 'every 2 minutes', 'daily at 9'). "
+    "config: {\"cron\": \"<5-field cron expression>\"}.\n\n"
+    "Examples:\n"
+    "- 'message me on Telegram when any mail comes' -> gmail_any_new, config {}.\n"
+    "- 'watch my downloads folder and summarize new PDFs' -> fs_new_in_folder, "
+    "config {\"folder\": \"downloads\", \"file_extensions\": [\"pdf\"]}.\n"
+    "- 'send hello every 2 minutes' -> cron, config {\"cron\": \"*/2 * * * *\"}.\n\n"
+    f"Allowed trigger_type values (use ONLY these): {sorted(VALID_TRIGGER_TYPES)}.\n"
+    "An agent may have multiple triggers. Never invent a trigger_type outside the allowed set. "
+    "If the request truly has no event/schedule, pick the closest supported trigger and note it in role_block."
 )
 
 
@@ -60,9 +81,17 @@ def validate_triggers(triggers: list[dict]) -> None:
             raise ValueError(f"Invalid trigger_type {tt!r}")
         cfg = t.get("trigger_config", {})
         if tt == "cron":
-            cron = cfg.get("cron", "")
-            if len(cron.split()) != 5:
-                raise ValueError(f"Invalid cron expression {cron!r}")
+            if len((cfg.get("cron", "")).split()) != 5:
+                raise ValueError(f"Invalid cron expression {cfg.get('cron')!r}")
+        elif tt == "fs_new_in_folder":
+            if not cfg.get("folder"):
+                raise ValueError("fs_new_in_folder requires a non-empty 'folder'")
+        elif tt == "gmail_new_from_sender":
+            if not cfg.get("sender"):
+                raise ValueError("gmail_new_from_sender requires a 'sender'")
+        elif tt == "gmail_keyword_match":
+            if not cfg.get("keywords"):
+                raise ValueError("gmail_keyword_match requires 'keywords'")
 
 
 async def _call_llm(messages: list[dict]) -> str:

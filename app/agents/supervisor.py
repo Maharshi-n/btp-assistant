@@ -266,6 +266,42 @@ async def _load_user_memories() -> str:
         return _memory_cache.get("text", "")
 
 
+async def _load_agent_overlay(agent_id: int | None) -> str:
+    """For an agent-owned chat thread, return the agent's persona + memory blocks
+    to overlay onto the base prompt. Returns "" when agent_id is None or unknown,
+    so normal chats are completely unaffected.
+    """
+    if not agent_id:
+        return ""
+    try:
+        from sqlalchemy import select as sa_select
+        from app.db.engine import AsyncSessionLocal
+        from app.db.models import Agent
+        from app.agents.agent_memory import load_memory_file
+        from pathlib import Path
+
+        async with AsyncSessionLocal() as db:
+            agent = await db.get(Agent, agent_id)
+        if agent is None:
+            return ""
+
+        block = (
+            "\n\n━━━ AGENT ROLE ━━━\n"
+            + (agent.role_block or "").strip()
+            + "\nYou are this agent. The user is chatting with you directly here; "
+            "use your role and memory below, but this is a live chat, not a trigger fire."
+        )
+        mem_path = Path(agent.memory_path)
+        if not mem_path.is_absolute():
+            mem_path = app_config.WORKSPACE_DIR / mem_path
+        mem_text = load_memory_file(mem_path).strip()
+        if mem_text:
+            block += "\n\n━━━ AGENT MEMORY ━━━\n" + mem_text
+        return block
+    except Exception:
+        return ""
+
+
 def _supervisor_system_prompt() -> str:
     IST = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(IST)
@@ -1183,6 +1219,9 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
     cfg = config.get("configurable", {})
     model_name: str = cfg.get("model", "gpt-4o")
     thread_id: int = _ws_thread_id(cfg)
+    # When a chat thread belongs to an agent, the run carries its id so we can
+    # overlay the agent's persona + memory onto the base prompt. None for normal chats.
+    agent_id_cfg = cfg.get("agent_id")
 
     # Initialise run context if this is the very first call
     ctx: RunContext = state.get("run_context") or RunContext(
@@ -1245,6 +1284,7 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
 
     memories_block = await _load_user_memories()
     skills_block = await _load_skills_index()
+    agent_overlay = await _load_agent_overlay(agent_id_cfg)
     messages = list(state["messages"])
 
     logger.debug(
@@ -1329,7 +1369,9 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
         logger.warning("supervisor_node: stuck-loop detected — forcing stop")
         messages = messages + [SystemMessage(content=stop_notice)]
 
-    system = SystemMessage(content=_supervisor_system_prompt() + memories_block + skills_block)
+    # Layered prompt: base + (agent persona+memory, only for agent threads) + user memory + skills.
+    # agent_overlay is "" for normal chats, so their prompt is byte-for-byte unchanged.
+    system = SystemMessage(content=_supervisor_system_prompt() + agent_overlay + memories_block + skills_block)
     messages.insert(0, system)
 
     # Heal any remaining dangling tool calls deeper in the history.

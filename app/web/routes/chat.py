@@ -263,6 +263,11 @@ async def _stream_langgraph(
         # desc() + limit gives us the 30 most recent; reverse for chronological order
         messages = list(reversed(result.scalars().all()))
 
+        # If this thread belongs to an agent, the supervisor overlays that agent's
+        # persona + memory. None for normal chats (unchanged behavior).
+        _thread_row = await db.get(Thread, thread_id)
+        _agent_id = getattr(_thread_row, "agent_id", None) if _thread_row else None
+
         # If this is a follow-up in an automation thread (multiple messages exist
         # and the user is the one sending now), strip the [AUTOMATION RUN — ...]
         # prefix from the first message so the LLM isn't permanently framed in
@@ -287,12 +292,15 @@ async def _stream_langgraph(
         ])
 
         graph = get_graph()
+        _configurable = {
+            "thread_id": str(thread_id),
+            "model": model,
+        }
+        if _agent_id is not None:
+            _configurable["agent_id"] = _agent_id
         lg_config = {
             "recursion_limit": 100,
-            "configurable": {
-                "thread_id": str(thread_id),
-                "model": model,
-            },
+            "configurable": _configurable,
         }
 
         # Either a fresh invoke with the message history, or a resume after interrupt

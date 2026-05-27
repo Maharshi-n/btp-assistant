@@ -463,6 +463,9 @@ async def _run_direct_thread(user_reply: str, db_thread_id: int, file_context: s
     async with AsyncSessionLocal() as db:
         thread = await db.get(Thread, db_thread_id)
         model = thread.model if thread else app_config.DEFAULT_THREAD_MODEL
+        # If this thread belongs to an agent, run it AS that agent (role + memory),
+        # same as the web chat. Generic chats have agent_id = None.
+        agent_id = getattr(thread, "agent_id", None) if thread else None
         msg = Message(
             thread_id=db_thread_id,
             role="user",
@@ -485,6 +488,7 @@ async def _run_direct_thread(user_reply: str, db_thread_id: int, file_context: s
             "ws_thread_id": db_thread_id,
             "model": model,
             "automation_run": True,
+            **({"agent_id": agent_id} if agent_id is not None else {}),
         },
     }
 

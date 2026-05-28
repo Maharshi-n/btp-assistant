@@ -21,6 +21,31 @@ _agent_locks: dict[int, asyncio.Lock] = {}
 # Cap the memory file size so context stays bounded.
 MEMORY_CAP_LINES = 200
 
+MANUAL_BEGIN = "<!-- MANUAL_NOTES_BEGIN -->"
+MANUAL_END = "<!-- MANUAL_NOTES_END -->"
+
+
+def split_manual_notes(text: str) -> tuple[str, str]:
+    """Return (auto_sections, manual_block_inner). If markers are absent or
+    malformed, the whole file is treated as auto and manual is ''."""
+    if MANUAL_BEGIN in text and MANUAL_END in text:
+        before, _, rest = text.partition(MANUAL_BEGIN)
+        inner, _, after = rest.partition(MANUAL_END)
+        auto = (before + after).strip()
+        return auto, inner.strip()
+    return text.strip(), ""
+
+
+def join_manual_notes(auto: str, manual: str) -> str:
+    """Reassemble the file: auto sections, then the protected manual block."""
+    return (
+        auto.rstrip()
+        + "\n\n"
+        + MANUAL_BEGIN + "\n"
+        + manual.strip()
+        + "\n" + MANUAL_END + "\n"
+    )
+
 _MEMORY_SYSTEM_PROMPT = (
     "You maintain an AI agent's long-term memory file. You receive the CURRENT "
     "memory and a batch of NEW events. Return the COMPLETE updated memory file.\n"
@@ -113,9 +138,11 @@ async def distil_memory(agent_id: int, memory_path: Path, new_messages_text: str
     if not new_messages_text.strip():
         return load_memory_file(memory_path)
     async with agent_lock(agent_id):
-        old = load_memory_file(memory_path)
-        new = await _call_memory_llm(old, new_messages_text, MEMORY_CAP_LINES, source=source)
-        if new:
-            _atomic_write(memory_path, new)
-            return new
-        return old
+        full = load_memory_file(memory_path)
+        auto_old, manual = split_manual_notes(full)
+        new_auto = await _call_memory_llm(auto_old, new_messages_text, MEMORY_CAP_LINES, source=source)
+        if new_auto:
+            combined = join_manual_notes(new_auto, manual)
+            _atomic_write(memory_path, combined)
+            return combined
+        return full

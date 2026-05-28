@@ -32,7 +32,7 @@ def _memory_path_for(agent_id: int) -> str:
 def _init_memory_file(agent_id: int) -> None:
     path = app_config.WORKSPACE_DIR / _memory_path_for(agent_id)
     if not path.exists():
-        _atomic_write(path, "## Durable facts\n\n## Open tasks\n\n## Recent decisions\n\n## People/contacts\n")
+        _atomic_write(path, "## Durable facts\n\n## Open tasks\n\n## Recent decisions\n\n## People/contacts\n\n<!-- MANUAL_NOTES_BEGIN -->\n<!-- MANUAL_NOTES_END -->\n")
 
 
 async def create_agent_record(

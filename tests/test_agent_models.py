@@ -43,3 +43,26 @@ async def test_agent_trigger_and_run(db):
     await db.flush()
     assert trig.id is not None and trig.enabled is True
     assert run.id is not None and run.status == "running"
+
+
+async def test_agent_trigger_has_created_by(db):
+    a = Agent(name="x", role_description="r", role_block="b", memory_path="agents/x.md")
+    db.add(a)
+    await db.flush()
+    t = AgentTrigger(agent_id=a.id, trigger_type="cron",
+                     trigger_config_json="{}", created_by="self")
+    db.add(t)
+    await db.flush()
+    await db.refresh(t)
+    assert t.created_by == "self"
+
+
+async def test_agent_trigger_created_by_defaults_null(db):
+    a = Agent(name="x", role_description="r", role_block="b", memory_path="agents/x.md")
+    db.add(a)
+    await db.flush()
+    t = AgentTrigger(agent_id=a.id, trigger_type="cron", trigger_config_json="{}")
+    db.add(t)
+    await db.flush()
+    await db.refresh(t)
+    assert t.created_by is None

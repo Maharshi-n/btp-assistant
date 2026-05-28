@@ -86,6 +86,10 @@ async def init_db() -> None:
                 await conn.execute(text("ALTER TABLE threads ADD COLUMN agent_id INTEGER"))
             except Exception:
                 pass
+            try:
+                await conn.execute(text("ALTER TABLE agent_triggers ADD COLUMN created_by VARCHAR(16)"))
+            except Exception:
+                pass
         else:
             try:
                 await conn.execute(text("ALTER TABLE automations ADD COLUMN IF NOT EXISTS raw_description TEXT"))
@@ -93,6 +97,10 @@ async def init_db() -> None:
                 pass  # column already exists
             try:
                 await conn.execute(text("ALTER TABLE threads ADD COLUMN IF NOT EXISTS agent_id INTEGER"))
+            except Exception:
+                pass
+            try:
+                await conn.execute(text("ALTER TABLE agent_triggers ADD COLUMN IF NOT EXISTS created_by VARCHAR(16)"))
             except Exception:
                 pass
 

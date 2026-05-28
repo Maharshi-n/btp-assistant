@@ -150,6 +150,7 @@ class AgentTrigger(Base):
     trigger_type: Mapped[str] = mapped_column(String(64), nullable=False)
     trigger_config_json: Mapped[str] = mapped_column(Text, nullable=False)
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         _DT, server_default=func.now(), nullable=False
     )

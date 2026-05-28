@@ -1131,6 +1131,11 @@ async def telegram_webhook(
                 async with AsyncSessionLocal() as db:
                     from sqlalchemy import desc
                     from app.db.models import AutomationConversation
+                    # Prefer the latest assistant message (the agent/RAION's
+                    # reply), but fall back to the most recent message of ANY
+                    # role — an agent fire thread may only hold the trigger
+                    # event (a user message) or end on a tool call, and showing
+                    # "(no messages yet)" when content exists is misleading.
                     _last_msg_result = await db.execute(
                         select(Message)
                         .where(Message.thread_id == _switch_tid)
@@ -1139,6 +1144,14 @@ async def telegram_webhook(
                         .limit(1)
                     )
                     _last_msg = _last_msg_result.scalars().first()
+                    if _last_msg is None:
+                        _any_msg_result = await db.execute(
+                            select(Message)
+                            .where(Message.thread_id == _switch_tid)
+                            .order_by(desc(Message.created_at))
+                            .limit(1)
+                        )
+                        _last_msg = _any_msg_result.scalars().first()
 
                     # Look up the AutomationConversation for this thread so replies
                     # resume the correct LangGraph checkpoint (not a fresh tg_ one)

@@ -28,12 +28,18 @@ def _session_factory():
 
 
 async def _invoke_graph(prompt: str, model: str, lg_thread_id: str, ws_thread_id: int,
-                        agent_id: int | None = None) -> str:
-    """Run the existing supervisor graph and return the final assistant text.
+                        agent_id: int | None = None) -> tuple[str, list[str]]:
+    """Run the existing supervisor graph and return (final assistant text, actions).
 
     `prompt` is the directive + trigger data (sent as the HumanMessage). When
     agent_id is set, the supervisor overlays the agent's role + memory onto its
     base system prompt — the same path used by live agent chats.
+
+    `actions` is a human-readable list of the tools the agent invoked (e.g.
+    "telegram_send: New email from …"). On an autonomous fire the agent often
+    ends on a tool call with no trailing text, so the final text comes back
+    empty — the caller uses `actions` to still leave a visible record of what
+    the fire actually did.
     """
     from langchain_core.messages import AIMessage, HumanMessage
     from app.agents.supervisor import get_graph
@@ -53,6 +59,7 @@ async def _invoke_graph(prompt: str, model: str, lg_thread_id: str, ws_thread_id
     }
     full: list[str] = []
     last_ai = ""
+    actions: list[str] = []
     async for event in graph.astream_events(
         {"messages": [HumanMessage(content=prompt)]}, lg_config, version="v2"
     ):
@@ -64,11 +71,34 @@ async def _invoke_graph(prompt: str, model: str, lg_thread_id: str, ws_thread_id
         elif et == "on_chain_end" and event.get("name") == "supervisor":
             output = event.get("data", {}).get("output", {})
             msgs = output.get("messages", []) if isinstance(output, dict) else []
+            for m in msgs:
+                for tc in getattr(m, "tool_calls", None) or []:
+                    actions.append(_describe_tool_call(tc))
             for m in reversed(msgs):
                 if isinstance(m, AIMessage) and m.content:
                     last_ai = m.content if isinstance(m.content, str) else str(m.content)
                     break
-    return "".join(full) or last_ai
+    # De-dupe while preserving order (the supervisor output replays the running
+    # message list, so the same call can appear across several on_chain_end events).
+    seen: set[str] = set()
+    uniq_actions = [a for a in actions if a and not (a in seen or seen.add(a))]
+    return ("".join(full) or last_ai), uniq_actions
+
+
+def _describe_tool_call(tc: dict) -> str:
+    """One-line, human-readable description of a tool call the agent made."""
+    name = tc.get("name", "tool")
+    args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+    # Surface the most meaningful argument for the channels an agent typically uses.
+    detail = ""
+    for key in ("message", "question", "body", "sql", "query", "file_path", "path", "name"):
+        if args.get(key):
+            detail = str(args[key])
+            break
+    detail = detail.replace("\n", " ").strip()
+    if len(detail) > 140:
+        detail = detail[:140] + "…"
+    return f"{name}: {detail}" if detail else name
 
 
 def _resolve_memory_path(memory_path: str) -> Path:
@@ -151,8 +181,9 @@ async def fire_agent(agent_id: int, trigger_id: int | None, trigger_context: dic
 
         status = "done"
         final_content = ""
+        actions: list[str] = []
         try:
-            final_content = await _invoke_graph(
+            final_content, actions = await _invoke_graph(
                 prompt=directive,
                 model=model,
                 lg_thread_id=f"agent_{agent_id}_{run_id}",
@@ -163,19 +194,31 @@ async def fire_agent(agent_id: int, trigger_id: int | None, trigger_context: dic
             logger.exception("Agent %d run %d failed: %s", agent_id, run_id, exc)
             status = "failed"
 
+        # Always leave a visible record. The agent usually ends an autonomous
+        # fire on a tool call (e.g. telegram_send) with no trailing text, so
+        # final_content is empty — fall back to a summary of what it actually
+        # did so the thread isn't blank and /switch shows the real last action.
+        record = final_content.strip() if final_content else ""
+        if not record:
+            if status == "failed":
+                record = "⚠️ This run failed before completing. See server logs."
+            elif actions:
+                record = "Done. Actions taken:\n" + "\n".join(f"• {a}" for a in actions)
+            else:
+                record = "Run completed without producing any output or action."
+
         async with _session_factory() as db:
-            if final_content:
-                db.add(Message(
-                    thread_id=thread_id,
-                    role="assistant",
-                    content=final_content,
-                    metadata_json=json.dumps({"agent_id": agent_id}),
-                ))
+            db.add(Message(
+                thread_id=thread_id,
+                role="assistant",
+                content=record,
+                metadata_json=json.dumps({"agent_id": agent_id, "actions": actions}),
+            ))
             run_obj = await db.get(AgentRun, run_id)
             if run_obj is not None:
                 run_obj.finished_at = datetime.now(timezone.utc)
                 run_obj.status = status
-                run_obj.trigger_summary = (final_content or "")[:200]
+                run_obj.trigger_summary = record[:200]
             await db.commit()
 
         # Safe to call inside the lock: this only arms a loop.call_later timer and

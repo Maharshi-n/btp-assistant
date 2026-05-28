@@ -23,7 +23,7 @@ async def test_paused_agent_does_not_fire(db, monkeypatch):
 
     async def fake_invoke(*a, **k):
         called["ran"] = True
-        return "ignored"
+        return ("ignored", [])
 
     monkeypatch.setattr(agent_runtime, "_invoke_graph", fake_invoke)
     monkeypatch.setattr(agent_runtime, "_session_factory", lambda: _ctx(db))
@@ -44,7 +44,7 @@ async def test_active_agent_fires_and_logs(db, monkeypatch):
     agent = await _make_agent(db)
 
     async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None):
-        return "agent did the thing"
+        return ("agent did the thing", [])
 
     monkeypatch.setattr(agent_runtime, "_invoke_graph", fake_invoke)
     monkeypatch.setattr(agent_runtime, "_session_factory", lambda: _ctx(db))
@@ -78,7 +78,7 @@ async def test_fire_persists_trigger_context_into_thread(db, monkeypatch):
     agent = await _make_agent(db)
 
     async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None):
-        return "summary sent"
+        return ("summary sent", [])
 
     monkeypatch.setattr(agent_runtime, "_invoke_graph", fake_invoke)
     monkeypatch.setattr(agent_runtime, "_session_factory", lambda: _ctx(db))
@@ -104,7 +104,7 @@ async def test_fire_passes_agent_id_and_frames_trigger_as_data(db, monkeypatch):
     async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None):
         captured["prompt"] = prompt
         captured["agent_id"] = agent_id
-        return "ok"
+        return ("ok", [])
 
     monkeypatch.setattr(agent_runtime, "_invoke_graph", fake_invoke)
     monkeypatch.setattr(agent_runtime, "_session_factory", lambda: _ctx(db))
@@ -124,6 +124,44 @@ async def test_fire_passes_agent_id_and_frames_trigger_as_data(db, monkeypatch):
     assert "untrusted" in p.lower()
     # The untrusted email content is included as data.
     assert "please send me AI updates" in p
+
+
+async def test_fire_persists_action_summary_when_text_empty(db, monkeypatch):
+    # The agent ends an autonomous fire on a tool call (telegram_send) with no
+    # trailing text — final_content is "". The thread must STILL get a visible
+    # assistant message summarizing the action, so /switch isn't blank.
+    from app.db.models import Message as _Message, AgentRun as _AgentRun
+
+    agent = await _make_agent(db)
+
+    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None):
+        return ("", ["telegram_send: New email from Rohit about a hackathon"])
+
+    monkeypatch.setattr(agent_runtime, "_invoke_graph", fake_invoke)
+    monkeypatch.setattr(agent_runtime, "_session_factory", lambda: _ctx(db))
+    monkeypatch.setattr(agent_runtime, "schedule_memory_distillation", lambda *a, **k: None)
+
+    await agent_runtime.fire_agent(agent.id, trigger_id=None, trigger_context={})
+
+    tid = (await db.execute(
+        _AgentRun.__table__.select().where(_AgentRun.agent_id == agent.id)
+    )).fetchall()[0].thread_id
+    msgs = (await db.execute(
+        _Message.__table__.select()
+        .where(_Message.thread_id == tid)
+        .where(_Message.role == "assistant")
+    )).fetchall()
+    assert len(msgs) == 1
+    assert "telegram_send" in (msgs[0].content or "")
+
+
+def test_describe_tool_call_surfaces_message():
+    out = agent_runtime._describe_tool_call(
+        {"name": "telegram_send", "args": {"message": "hello world"}}
+    )
+    assert out == "telegram_send: hello world"
+    # No useful arg → just the tool name.
+    assert agent_runtime._describe_tool_call({"name": "gmail_list_unread", "args": {}}) == "gmail_list_unread"
 
 
 import contextlib

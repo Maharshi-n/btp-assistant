@@ -171,6 +171,18 @@ async def _gmail_poll_inner(agent_id: int, trigger_id: int) -> None:
 
         async def _handle(mid: str) -> None:
             ectx = await _fetch_email_context(service, mid)
+            # If the fetch failed entirely, or the message has no usable content
+            # (no subject AND no body), don't wake the agent — otherwise it sends
+            # a junk "new email: no subject, no sender, no body" notification.
+            if not ectx:
+                logger.info("agent gmail %d: skipping unfetchable email %s", trigger_id, mid)
+                return
+            subj = (ectx.get("email_subject") or "").strip()
+            has_subject = bool(subj) and subj != "(no subject)"
+            has_body = bool((ectx.get("email_body") or "").strip())
+            if not has_subject and not has_body:
+                logger.info("agent gmail %d: skipping empty email %s (no subject/body)", trigger_id, mid)
+                return
             await fire_agent(agent_id, trigger_id=trigger_id,
                              trigger_context={"trusted_block": _build_email_block(ectx)})
 

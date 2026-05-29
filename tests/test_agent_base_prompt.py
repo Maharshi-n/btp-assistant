@@ -23,6 +23,16 @@ def test_agent_base_stay_in_role_is_scoped_to_autonomous_runs():
     assert "override" in low or "overrides" in low
 
 
+def test_learned_pattern_may_suggest_but_never_auto_acts():
+    ab = supervisor._agent_base_system_prompt()
+    low = ab.lower()
+    # The agent may LEARN from repeated past memory, but a learned pattern only lets it
+    # SUGGEST on an autonomous fire — it must never auto-send/act outward on its own.
+    assert "pattern" in low
+    assert "suggest" in low or "propose" in low
+    assert "never" in low and ("auto" in low or "without" in low or "on your own" in low)
+
+
 def test_self_scheduling_is_finely_guardrailed():
     ab = supervisor._agent_base_system_prompt()
     low = ab.lower()

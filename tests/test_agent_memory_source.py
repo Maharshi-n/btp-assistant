@@ -1,15 +1,19 @@
 from app.agents import agent_memory
 
 
-def test_memory_prompt_records_events_not_behavioural_rules():
+def test_memory_prompt_allows_patterns_above_a_high_threshold():
     p = agent_memory._MEMORY_SYSTEM_PROMPT.lower()
     # Memory must capture the agent's environment (what happened around it)...
     assert "record" in p or "what happened" in p or "environment" in p
-    # ...but must NEVER become a standing instruction / behavioural pattern that makes
-    # the agent auto-act on future similar events (the 'Maharshi always replies like
-    # this -> auto-reply to the next similar mail' poisoning bug).
-    assert "not an instruction" in p or "not a rule" in p or "do not auto" in p or "never auto" in p
+    # A pattern may be noted ONLY after several consistent, repeated instances
+    # (high bar). One or two examples never qualify — this kills single-event poisoning.
     assert "pattern" in p
+    assert "several" in p or "repeated" in p or "consistent" in p
+    assert "one or two" in p or "single" in p or "one-off" in p
+    # Even a learned pattern is tentative — never written as an auto-do/always rule.
+    assert "never" in p and ("auto" in p or "always" in p)
+    # A learned pattern may at most inform a SUGGESTION, never an autonomous outward action.
+    assert "suggest" in p
 
 
 async def test_distil_passes_source_to_llm(tmp_path, monkeypatch):

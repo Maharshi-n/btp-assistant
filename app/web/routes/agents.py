@@ -119,7 +119,29 @@ async def delete_agent_record(db: AsyncSession, agent_id: int) -> None:
 @router.get("/agents")
 async def agents_page(request: Request, db: AsyncSession = Depends(get_db), _u: User = Depends(require_user)):
     agents = (await db.execute(select(Agent).order_by(Agent.created_at.desc()))).scalars().all()
-    return templates.TemplateResponse("agents.html", {"request": request, "agents": agents})
+    cards = []
+    for a in agents:
+        last = (await db.execute(
+            select(AgentRun).where(AgentRun.agent_id == a.id).order_by(AgentRun.started_at.desc()).limit(1)
+        )).scalars().first()
+        trigs = (await db.execute(
+            select(AgentTrigger).where(AgentTrigger.agent_id == a.id)
+        )).scalars().all()
+        next_wake = None
+        for t in trigs:
+            if t.trigger_type == "self_scheduled":
+                fa = json.loads(t.trigger_config_json).get("fire_at")
+                if fa and (next_wake is None or fa < next_wake):
+                    next_wake = fa
+        cards.append({
+            "agent": a,
+            "last_status": last.status if last else None,
+            "last_summary": (last.trigger_summary or "")[:120] if last else "",
+            "last_at": last.started_at.isoformat() if last and last.started_at else None,
+            "next_wake": next_wake,
+            "trigger_count": len(trigs),
+        })
+    return templates.TemplateResponse("agents.html", {"request": request, "cards": cards})
 
 
 @router.get("/agents/{agent_id}")

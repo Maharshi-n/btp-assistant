@@ -33,7 +33,7 @@
         <button onclick="act({{ a.id }},'resume')" class="px-3 py-1 text-sm border dark:border-gray-600 rounded-lg">Resume</button>
         {% endif %}
         <a href="/agents/{{ a.id }}" class="px-3 py-1 text-sm border dark:border-gray-600 rounded-lg">Open</a>
-        <button onclick="del({{ a.id }}, {{ a.name|tojson }})" class="px-3 py-1 text-sm border border-red-400 text-red-600 rounded-lg ml-auto">Delete</button>
+        <button data-del-id="{{ a.id }}" data-del-name="{{ a.name }}" class="px-3 py-1 text-sm border border-red-400 text-red-600 rounded-lg ml-auto">Delete</button>
       </div>
     </div>
     {% else %}
@@ -78,11 +78,18 @@ document.querySelectorAll('[data-ts]').forEach(el => {
 });
 
 async function act(id, action){ await fetch(`/api/agents/${id}/${action}`,{method:'POST'}); location.reload(); }
-async function del(id, name){
+
+async function deleteAgent(id, name){
   if(!window.confirm(`Delete agent "${name}"? Removes its triggers, history and memory.`)) return;
   const r = await fetch(`/api/agents/${id}`,{method:'DELETE'});
-  if(r.ok) location.reload();
+  if(r.ok){ location.reload(); } else { alert('Delete failed (HTTP ' + r.status + ')'); }
 }
+
+// Delegated handler so the agent name never has to be embedded in an inline
+// onclick attribute (which broke when the name was quoted/escaped).
+document.querySelectorAll('[data-del-id]').forEach(btn => {
+  btn.addEventListener('click', () => deleteAgent(btn.getAttribute('data-del-id'), btn.getAttribute('data-del-name') || ''));
+});
 
 const wizard = {
   open(){ document.getElementById('wiz').classList.remove('hidden'); },

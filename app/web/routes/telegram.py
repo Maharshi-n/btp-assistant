@@ -488,6 +488,7 @@ async def _run_direct_thread(user_reply: str, db_thread_id: int, file_context: s
             "ws_thread_id": db_thread_id,
             "model": model,
             "automation_run": True,
+            "user_present": True,  # user is live in this thread (Telegram reply) — suppress /switch footer
             **({"agent_id": agent_id} if agent_id is not None else {}),
         },
     }
@@ -624,6 +625,7 @@ async def _run_continuation(user_reply: str, conversation_id: int) -> str:
             "ws_thread_id": db_thread_id or 0,
             "model": app_config.DEFAULT_THREAD_MODEL,
             "automation_run": True,
+            "user_present": True,  # user is live in this thread (Telegram reply) — suppress /switch footer
         },
     }
 

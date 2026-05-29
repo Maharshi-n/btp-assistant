@@ -14,6 +14,38 @@ from app.tools.filesystem import OutsideWorkspaceError, _safe_resolve
 logger = logging.getLogger(__name__)
 
 
+def _should_append_switch_footer(
+    is_automation: bool, thread_id: int, active_thread_id: int | None,
+    user_present: bool = False,
+) -> bool:
+    """Decide whether to append the '[Thread #N — /switch N to follow up]' footer.
+
+    The footer points the user at a thread they may not be watching. Show it when:
+    - an automation/agent fired and the user is NOT in a live reply for this thread, OR
+    - a DIFFERENT thread is the active conversation (clash) — tell them where to go.
+
+    Hide it when `user_present` is True (this send is happening inside a user-initiated
+    Telegram reply into THIS thread — they just /switch-ed in or are mid-conversation,
+    so telling them to /switch into the thread they're already in is pure noise). Also
+    hide for plain chat with no clash.
+
+    `user_present` is the authoritative signal — it is set by the user-reply paths
+    (_run_direct_thread / _run_continuation). The active_thread_id clash check is a
+    secondary guard for the case where a DIFFERENT thread is mid-conversation.
+    """
+    if not thread_id:
+        return False
+    clash = active_thread_id is not None and active_thread_id != thread_id
+    if clash:
+        return True
+    if user_present:
+        # User is live in this very thread — no point telling them to switch into it.
+        return False
+    if is_automation:
+        return True
+    return False
+
+
 @tool
 async def telegram_send(message: str, config: RunnableConfig = None) -> str:
     """Send a message to the user's Telegram chat.
@@ -35,15 +67,18 @@ async def telegram_send(message: str, config: RunnableConfig = None) -> str:
     cfg = config.get("configurable", {}) if isinstance(config, dict) else {}
     thread_id_raw = cfg.get("ws_thread_id") or cfg.get("thread_id") or 0
     is_automation = bool(cfg.get("automation_run", False))
+    # user_present: set by the user-initiated Telegram reply paths
+    # (_run_direct_thread / _run_continuation). When True, the user is live in this
+    # thread, so the '/switch' footer is suppressed (they're already here).
+    user_present = bool(cfg.get("user_present", False))
     try:
         thread_id = int(thread_id_raw)
     except (TypeError, ValueError):
         thread_id = 0
 
-    # Append thread ID only when necessary:
-    # - automations always get it (user needs to know which thread to /switch to)
-    # - regular chat only gets it when there's a clash (different active thread)
-    # - regular chat with matching/no active thread: send clean, no footer
+    # Append the '/switch' footer only when the user might not be looking at this
+    # thread (unattended fire or a clash with a different active thread). If the user
+    # is already live in THIS thread, suppress it — see _should_append_switch_footer.
     text_to_send = message
     try:
         from app.db.engine import AsyncSessionLocal
@@ -57,18 +92,13 @@ async def telegram_send(message: str, config: RunnableConfig = None) -> str:
                 .where(TelegramPendingReply.expires_at > now)
             )
             active = existing.scalars().first()
+        active_thread_id = active.thread_id if active else None
         logger.info(
             "telegram_send: thread_id=%s active_thread=%s is_automation=%s",
-            thread_id, active.thread_id if active else None, is_automation,
+            thread_id, active_thread_id, is_automation,
         )
-        clash = active is not None and thread_id and active.thread_id != thread_id
-        if is_automation and thread_id:
-            # Automation/cron: user may not be watching — always show thread ID
+        if _should_append_switch_footer(is_automation, thread_id, active_thread_id, user_present):
             text_to_send = f"{message}\n\n[Thread #{thread_id} — /switch {thread_id} to follow up]"
-        elif clash:
-            # Different thread is active — user needs to know which thread to switch to
-            text_to_send = f"{message}\n\n[Thread #{thread_id} — /switch {thread_id} to follow up]"
-        # else: regular chat (user is present) — send clean, no footer
     except Exception as exc:
         logger.warning("telegram_send: clash check failed: %s", exc)
 

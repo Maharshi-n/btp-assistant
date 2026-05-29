@@ -68,6 +68,72 @@ async def test_delete_agent_removes_agent_triggers_and_runs(db, monkeypatch):
     assert len(runs) == 0
 
 
+class _FakeRequest:
+    def __init__(self, body):
+        self._body = body
+
+    async def json(self):
+        return self._body
+
+
+async def test_list_triggers_endpoint(db):
+    agent = Agent(name="T", role_description="r", role_block="b", memory_path="agents/t.md")
+    db.add(agent)
+    await db.flush()
+    db.add(AgentTrigger(agent_id=agent.id, trigger_type="cron",
+                        trigger_config_json='{"cron": "0 9 * * *"}', created_by="user"))
+    await db.flush()
+
+    resp = await agents_routes.api_list_triggers(agent.id, db=db, _u=None)
+    import json as _json
+    rows = _json.loads(resp.body)
+    assert len(rows) == 1
+    assert rows[0]["trigger_type"] == "cron"
+    assert rows[0]["created_by"] == "user"
+
+
+async def test_create_and_delete_trigger_endpoint(db, monkeypatch):
+    monkeypatch.setattr(agents_routes, "register_agent_trigger", lambda *a, **k: None)
+    monkeypatch.setattr(agents_routes, "unregister_agent_trigger", lambda *a, **k: None)
+    agent = Agent(name="T", role_description="r", role_block="b", memory_path="agents/t.md")
+    db.add(agent)
+    await db.flush()
+
+    import json as _json
+    req = _FakeRequest({"trigger_type": "cron", "trigger_config": {"cron": "0 9 * * *"}})
+    resp = await agents_routes.api_create_trigger(agent.id, req, db=db, _u=None)
+    tid = _json.loads(resp.body)["id"]
+
+    # created_by="user" for UI-created triggers
+    from app.db.models import AgentTrigger as _AT
+    row = await db.get(_AT, tid)
+    assert row.created_by == "user"
+
+    resp2 = await agents_routes.api_delete_trigger(agent.id, tid, db=db, _u=None)
+    assert _json.loads(resp2.body)["deleted"] == tid
+
+
+async def test_create_trigger_rejects_invalid(db, monkeypatch):
+    monkeypatch.setattr(agents_routes, "register_agent_trigger", lambda *a, **k: None)
+    from fastapi import HTTPException
+    import pytest
+    agent = Agent(name="T", role_description="r", role_block="b", memory_path="agents/t.md")
+    db.add(agent)
+    await db.flush()
+    req = _FakeRequest({"trigger_type": "cron", "trigger_config": {"cron": "bad"}})
+    with pytest.raises(HTTPException):
+        await agents_routes.api_create_trigger(agent.id, req, db=db, _u=None)
+
+
+async def test_episodes_endpoint(db):
+    agent = Agent(name="T", role_description="r", role_block="b", memory_path="agents/t.md")
+    db.add(agent)
+    await db.flush()
+    resp = await agents_routes.api_episodes(agent.id, q="", since="", db=db, _u=None)
+    import json as _json
+    assert _json.loads(resp.body) == []
+
+
 async def test_pause_resume_flips_status(db, monkeypatch):
     agent = Agent(name="A", role_description="r", role_block="b", memory_path="agents/a.md")
     db.add(agent)

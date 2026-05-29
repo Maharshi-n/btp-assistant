@@ -220,6 +220,60 @@ async def api_get_memory(agent_id: int, db: AsyncSession = Depends(get_db), _u: 
     return JSONResponse({"memory": load_memory_file(path)})
 
 
+@router.get("/api/agents/{agent_id}/triggers")
+async def api_list_triggers(agent_id: int, db: AsyncSession = Depends(get_db), _u: User = Depends(require_user)):
+    trigs = (await db.execute(
+        select(AgentTrigger).where(AgentTrigger.agent_id == agent_id)
+    )).scalars().all()
+    return JSONResponse([
+        {"id": t.id, "trigger_type": t.trigger_type,
+         "config": json.loads(t.trigger_config_json), "created_by": t.created_by or "user",
+         "enabled": t.enabled}
+        for t in trigs
+    ])
+
+
+@router.post("/api/agents/{agent_id}/triggers")
+async def api_create_trigger(agent_id: int, request: Request, db: AsyncSession = Depends(get_db), _u: User = Depends(require_user)):
+    agent = await db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(404, "Agent not found")
+    body = await request.json()
+    tt = body.get("trigger_type")
+    cfg = body.get("trigger_config", {})
+    from app.agents.agent_parser import validate_triggers
+    try:
+        validate_triggers([{"trigger_type": tt, "trigger_config": cfg}])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    trig = AgentTrigger(agent_id=agent_id, trigger_type=tt,
+                        trigger_config_json=json.dumps(cfg), created_by="user")
+    db.add(trig)
+    await db.commit()
+    await db.refresh(trig)
+    register_agent_trigger(trig, loop=None)
+    return JSONResponse({"id": trig.id, "trigger_type": trig.trigger_type})
+
+
+@router.delete("/api/agents/{agent_id}/triggers/{trigger_id}")
+async def api_delete_trigger(agent_id: int, trigger_id: int, db: AsyncSession = Depends(get_db), _u: User = Depends(require_user)):
+    t = await db.get(AgentTrigger, trigger_id)
+    if t is None or t.agent_id != agent_id:
+        raise HTTPException(404, "Trigger not found")
+    unregister_agent_trigger(t.id)
+    await db.delete(t)
+    await db.commit()
+    return JSONResponse({"deleted": trigger_id})
+
+
+@router.get("/api/agents/{agent_id}/episodes")
+async def api_episodes(agent_id: int, q: str = "", since: str = "", db: AsyncSession = Depends(get_db), _u: User = Depends(require_user)):
+    from app.agents.agent_episodes import recall
+    path = app_config.WORKSPACE_DIR / "agents" / f"{agent_id}_episodes.jsonl"
+    hits = recall(path, query=q, since=since or None)
+    return JSONResponse(hits)
+
+
 @router.put("/api/agents/{agent_id}/memory")
 async def api_put_memory(agent_id: int, request: Request, db: AsyncSession = Depends(get_db), _u: User = Depends(require_user)):
     agent = await db.get(Agent, agent_id)

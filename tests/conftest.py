@@ -13,6 +13,14 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_workspace(tmp_path, monkeypatch):
+    """Redirect WORKSPACE_DIR to a per-test temp dir so tests that write agent
+    memory/episode files never pollute the real configured workspace (e.g. D:\\)."""
+    import app.config as app_config
+    monkeypatch.setattr(app_config, "WORKSPACE_DIR", tmp_path)
+
+
 @pytest_asyncio.fixture
 async def db() -> AsyncSession:
     """A fresh in-memory SQLite DB with all tables created, torn down per test."""

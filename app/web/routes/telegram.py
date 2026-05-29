@@ -14,6 +14,7 @@ from app.db.engine import AsyncSessionLocal
 import httpx
 
 from app.db.models import Message, TelegramPendingReply, Thread
+from app.agents.agent_runtime import schedule_chat_distillation
 
 logger = logging.getLogger(__name__)
 
@@ -530,6 +531,10 @@ async def _run_direct_thread(user_reply: str, db_thread_id: int, file_context: s
                 db2.add(msg)
                 await db2.commit()
 
+        # If this is an agent thread, remember the exchange (the user's instruction +
+        # what the agent did) in the agent's memory — debounced, importance-filtered.
+        await _distil_agent_thread_if_agent(db_thread_id)
+
         return final_content or "Done."
 
     except Exception as exc:
@@ -553,6 +558,22 @@ async def _run_direct_thread(user_reply: str, db_thread_id: int, file_context: s
                 "Refresh on the relevant connector."
             )
         return f"Something went wrong: {exc_str[:300]}"
+
+
+async def _distil_agent_thread_if_agent(db_thread_id: int) -> None:
+    """If this thread belongs to an agent, distil the recent exchange into the agent's
+    memory so the agent remembers its environment — including what the user told it to
+    do here (e.g. "Maharshi asked me to reply to Rohit with X"). No-op for plain chats.
+    Best-effort: never raise into the caller's run.
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            thread = await db.get(Thread, db_thread_id)
+        agent_id = getattr(thread, "agent_id", None) if thread else None
+        if agent_id is not None:
+            schedule_chat_distillation(agent_id, db_thread_id)
+    except Exception as exc:
+        logger.warning("_distil_agent_thread_if_agent failed for thread %s: %s", db_thread_id, exc)
 
 
 async def _resolve_reply_route(db, thread_id: int | None, conversation_id: int | None) -> tuple[str, int | None]:

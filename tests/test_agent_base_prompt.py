@@ -23,6 +23,16 @@ def test_agent_base_stay_in_role_is_scoped_to_autonomous_runs():
     assert "override" in low or "overrides" in low
 
 
+def test_self_scheduling_is_finely_guardrailed():
+    ab = supervisor._agent_base_system_prompt()
+    low = ab.lower()
+    # The self-scheduling tools still exist...
+    assert "agent_schedule_self" in ab and "agent_create_trigger" in ab
+    # ...but must be framed as last-resort with explicit anti-loop / anti-echo warnings.
+    assert "last resort" in low or "only when" in low or "rarely" in low
+    assert "loop" in low and "echo" in low
+
+
 def test_raion_base_is_untouched():
     # RAION's own prompt must KEEP its database-first behaviour.
     rb = supervisor._supervisor_system_prompt()

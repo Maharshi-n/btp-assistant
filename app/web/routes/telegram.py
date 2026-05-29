@@ -554,6 +554,33 @@ async def _run_direct_thread(user_reply: str, db_thread_id: int, file_context: s
         return f"Something went wrong: {exc_str[:300]}"
 
 
+async def _resolve_reply_route(db, thread_id: int | None, conversation_id: int | None) -> tuple[str, int | None]:
+    """Decide how an inbound Telegram reply should resume.
+
+    Returns ("direct", None) to resume the thread's own LangGraph checkpoint via
+    _run_direct_thread, or ("continuation", conversation_id) to resume an
+    AutomationConversation via _run_continuation.
+
+    Agent threads NEVER have an AutomationConversation — fire_agent creates a plain
+    Thread(agent_id=...) only. So if the pending thread is an agent thread, we force
+    the direct route regardless of any conversation_id that leaked into the pending
+    reply (e.g. the agent's telegram_ask was called with a stale conversation_id from
+    its persisted trigger block). This prevents the '/switch <agent thread>' -> approve
+    -> 'Error: conversation not found.' bug.
+    """
+    if conversation_id is None:
+        return ("direct", None)
+    if thread_id:
+        thread = await db.get(Thread, thread_id)
+        if thread is not None and getattr(thread, "agent_id", None) is not None:
+            logger.info(
+                "telegram route: thread %s is an agent thread — forcing direct route "
+                "(ignoring leaked conversation_id=%s)", thread_id, conversation_id,
+            )
+            return ("direct", None)
+    return ("continuation", conversation_id)
+
+
 async def _run_continuation(user_reply: str, conversation_id: int) -> str:
     """Resume the automation's LangGraph thread with the user's Telegram reply.
 
@@ -1468,6 +1495,11 @@ async def telegram_webhook(
 
         conversation_id = pending.conversation_id
         pending_thread_id = pending.thread_id
+        # Agent threads have no AutomationConversation — force the direct resume path
+        # even if a stale conversation_id leaked into the pending reply.
+        _route, conversation_id = await _resolve_reply_route(
+            db, pending_thread_id, conversation_id
+        )
         await db.execute(
             delete(TelegramPendingReply).where(TelegramPendingReply.chat_id == chat_id)
         )

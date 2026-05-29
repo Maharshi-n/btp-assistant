@@ -157,12 +157,15 @@ async def agent_detail_page(agent_id: int, request: Request, db: AsyncSession = 
     )).scalars().all()
     path = app_config.WORKSPACE_DIR / agent.memory_path
     memory = load_memory_file(path)
+    from app.agents.agent_episodes import read_episodes
+    episodes = read_episodes(app_config.WORKSPACE_DIR / "agents" / f"{agent_id}_episodes.jsonl")
     return templates.TemplateResponse("agent_detail.html", {
         "request": request,
         "agent": agent,
         "triggers": triggers,
         "runs": runs,
         "memory": memory,
+        "episodes": list(reversed(episodes))[:50],
     })
 
 

@@ -254,6 +254,13 @@ _POLICY_TABLE: dict[str, object] = {
     # RAG — local vector store operations
     "rag_ingest": policy_rag_ingest,
     "rag_search": policy_rag_search,
+    # Agent self-management tools — self-scoped (an agent only touches its own
+    # triggers/history), always auto. RAION never calls these (agent-run only).
+    "agent_schedule_self": lambda args: "auto",
+    "agent_create_trigger": lambda args: "auto",
+    "agent_list_triggers": lambda args: "auto",
+    "agent_delete_trigger": lambda args: "auto",
+    "agent_recall": lambda args: "auto",
 }
 
 

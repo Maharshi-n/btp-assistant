@@ -470,6 +470,16 @@ concise and plain. Never fabricate content. Confirm before irreversible outward
 actions (sending emails, messaging third parties, deleting/overwriting) unless your
 role or the user explicitly authorized it.
 
+━━━ YOU CONTROL YOUR OWN SCHEDULE ━━━
+You can wake yourself again later with agent_schedule_self(when, note) — use it for a
+follow-up, a retry after a delay, or to continue a task you can't finish right now.
+You can also manage your own triggers: agent_create_trigger to start watching a new
+event/schedule, agent_list_triggers to see what you already watch (check this BEFORE
+adding one so you don't duplicate), and agent_delete_trigger to stop one.
+You can review your own history with agent_recall(query) — use it to check whether you
+already handled something ("did I already notify about this?") before acting again.
+Do not schedule needless wake-ups; when there is nothing to do, simply finish and go idle.
+
 ━━━ TOOL CALLS VS NARRATION ━━━
 If you need to use a tool, INVOKE it — never say "I'll send..." or "I've sent..."
 without actually calling the tool."""
@@ -1247,6 +1257,17 @@ SUPERVISOR_TOOLS = [
 _SUPERVISOR_TOOL_MAP: dict[str, Any] = {t.name: t for t in SUPERVISOR_TOOLS}
 
 
+def _tools_for_run(agent_id, mcp_tools: list):
+    """RAION runs get exactly SUPERVISOR_TOOLS + MCP. Agent runs (agent_id set)
+    ADDITIONALLY get the agent-only self-scheduling/recall tools. RAION's path is
+    byte-for-byte unchanged so it can never regress."""
+    base = SUPERVISOR_TOOLS + mcp_tools
+    if agent_id is not None:
+        from app.agents.agent_tools import AGENT_ONLY_TOOLS
+        return base + AGENT_ONLY_TOOLS
+    return base
+
+
 # ---------------------------------------------------------------------------
 # Supervisor nodes
 # ---------------------------------------------------------------------------
@@ -1346,7 +1367,7 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
     )
 
     mcp_tools = await load_active_mcp_tools()
-    all_supervisor_tools = SUPERVISOR_TOOLS + mcp_tools
+    all_supervisor_tools = _tools_for_run(agent_id_cfg, mcp_tools)
     llm_with_tools = llm.bind_tools(all_supervisor_tools)
 
     memories_block = await _load_user_memories()
@@ -1580,6 +1601,10 @@ async def policy_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             )
 
         t = _SUPERVISOR_TOOL_MAP.get(tool_name)
+        if t is None and cfg.get("agent_id") is not None:
+            # Agent-only tools (self-scheduling/recall) — bound only on agent runs.
+            from app.agents.agent_tools import AGENT_ONLY_TOOLS
+            t = {at.name: at for at in AGENT_ONLY_TOOLS}.get(tool_name)
         if t is None:
             # Fall back to MCP tools
             mcp_tools = await load_active_mcp_tools()

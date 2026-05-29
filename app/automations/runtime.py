@@ -23,6 +23,7 @@ from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from watchdog.events import FileCreatedEvent, FileSystemEventHandler
 from watchdog.observers import Observer
@@ -789,7 +790,39 @@ def _agent_job_id(kind: str, trigger_id: int) -> str:
 async def _fire_agent_job(agent_id: int, trigger_id: int) -> None:
     """APScheduler coroutine for an agent cron/gmail trigger."""
     from app.agents.agent_runtime import fire_agent
-    await fire_agent(agent_id, trigger_id=trigger_id, trigger_context={})
+    # Real recurring trigger: chain resets to 0 (a real-world event, not a self-loop).
+    await fire_agent(agent_id, trigger_id=trigger_id,
+                     trigger_context={"trigger_type": "cron", "chain_depth": 0})
+
+
+async def _fire_self_scheduled_job(agent_id: int, trigger_id: int) -> None:
+    """Fire a one-off self-scheduled wake, passing chain_depth, then delete the
+    trigger row + scheduler job (it only ever runs once)."""
+    from app.agents.agent_runtime import fire_agent
+    from app.db.models import AgentTrigger as _AT
+
+    note = ""
+    chain_depth = 0
+    async with AsyncSessionLocal() as db:
+        t = await db.get(_AT, trigger_id)
+        if t is not None:
+            cfg = json.loads(t.trigger_config_json)
+            note = cfg.get("note", "")
+            chain_depth = int(cfg.get("chain_depth", 0))
+    trusted = (f"\n\n━━━ SELF-SCHEDULED WAKE ━━━\nYou asked yourself to wake now to: {note}\n"
+               "━━━ END ━━━") if note else ""
+    await fire_agent(agent_id, trigger_id, {
+        "trusted_block": trusted,
+        "chain_depth": chain_depth,
+        "trigger_type": "self_scheduled",
+    })
+    # One-shot cleanup: remove the trigger row and the scheduler job.
+    async with AsyncSessionLocal() as db:
+        t = await db.get(_AT, trigger_id)
+        if t is not None:
+            await db.delete(t)
+            await db.commit()
+    unregister_agent_trigger(trigger_id)
 
 
 def register_agent_trigger(trigger, loop) -> None:
@@ -839,13 +872,33 @@ def register_agent_trigger(trigger, loop) -> None:
         "whatsapp_group_new", "whatsapp_keyword_match", "whatsapp_outgoing_new", "whatsapp_smart_reply",
     ):
         logger.info("Registered agent whatsapp trigger %d (agent %d) — webhook-driven", tid, aid)
+
+    elif trigger.trigger_type == "self_scheduled":
+        fire_at_raw = config.get("fire_at", "")
+        try:
+            fire_at = datetime.fromisoformat(fire_at_raw)
+            if fire_at.tzinfo is None:
+                fire_at = fire_at.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            logger.warning("Agent self_scheduled trigger %d: bad fire_at %r — skipping", tid, fire_at_raw)
+            return
+        job_id = _agent_job_id("selfsched", tid)
+        if _scheduler and not _scheduler.get_job(job_id):
+            _scheduler.add_job(
+                _fire_self_scheduled_job,
+                trigger=DateTrigger(run_date=fire_at),
+                id=job_id, replace_existing=True, args=[aid, tid],
+                max_instances=1, misfire_grace_time=300, coalesce=True,
+            )
+            logger.info("Registered agent self_scheduled trigger %d (agent %d) at %s",
+                        tid, aid, fire_at.isoformat())
     else:
         logger.warning("Agent trigger %d: unsupported trigger_type %r", tid, trigger.trigger_type)
 
 
 def unregister_agent_trigger(trigger_id: int) -> None:
     global _scheduler, _observer
-    for kind in ("cron", "gmail"):
+    for kind in ("cron", "gmail", "selfsched"):
         job_id = _agent_job_id(kind, trigger_id)
         if _scheduler and _scheduler.get_job(job_id):
             _scheduler.remove_job(job_id)

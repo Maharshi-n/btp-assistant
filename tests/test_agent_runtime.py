@@ -43,7 +43,7 @@ async def test_over_budget_agent_skips(db, monkeypatch):
 async def test_active_agent_fires_and_logs(db, monkeypatch):
     agent = await _make_agent(db)
 
-    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None):
+    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None, chain_depth=0):
         return ("agent did the thing", [])
 
     monkeypatch.setattr(agent_runtime, "_invoke_graph", fake_invoke)
@@ -77,7 +77,7 @@ async def test_fire_persists_trigger_context_into_thread(db, monkeypatch):
 
     agent = await _make_agent(db)
 
-    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None):
+    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None, chain_depth=0):
         return ("summary sent", [])
 
     monkeypatch.setattr(agent_runtime, "_invoke_graph", fake_invoke)
@@ -101,7 +101,7 @@ async def test_fire_passes_agent_id_and_frames_trigger_as_data(db, monkeypatch):
     agent = await _make_agent(db)
     captured = {}
 
-    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None):
+    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None, chain_depth=0):
         captured["prompt"] = prompt
         captured["agent_id"] = agent_id
         return ("ok", [])
@@ -134,7 +134,7 @@ async def test_fire_persists_action_summary_when_text_empty(db, monkeypatch):
 
     agent = await _make_agent(db)
 
-    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None):
+    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None, chain_depth=0):
         return ("", ["telegram_send: New email from Rohit about a hackathon"])
 
     monkeypatch.setattr(agent_runtime, "_invoke_graph", fake_invoke)
@@ -162,6 +162,44 @@ def test_describe_tool_call_surfaces_message():
     assert out == "telegram_send: hello world"
     # No useful arg → just the tool name.
     assert agent_runtime._describe_tool_call({"name": "gmail_list_unread", "args": {}}) == "gmail_list_unread"
+
+
+async def test_fire_writes_episode(db, monkeypatch, tmp_path):
+    from app.agents import agent_runtime as ar, agent_episodes as ep
+    agent = await _make_agent(db)
+
+    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None, chain_depth=0):
+        return ("did the thing", ["telegram_send: hi"])
+
+    monkeypatch.setattr(ar, "_invoke_graph", fake_invoke)
+    monkeypatch.setattr(ar, "_session_factory", lambda: _ctx(db))
+    monkeypatch.setattr(ar, "schedule_memory_distillation", lambda *a, **k: None)
+    epfile = tmp_path / "ep.jsonl"
+    monkeypatch.setattr(ar, "_episode_path_for", lambda agent: epfile)
+
+    await ar.fire_agent(agent.id, trigger_id=None, trigger_context={"trigger_type": "cron"})
+    rows = ep.read_episodes(epfile)
+    assert len(rows) == 1
+    assert "did the thing" in rows[0]["summary"]
+    assert rows[0]["trigger_type"] == "cron"
+
+
+async def test_fire_passes_chain_depth_into_invoke(db, monkeypatch, tmp_path):
+    from app.agents import agent_runtime as ar
+    agent = await _make_agent(db)
+    captured = {}
+
+    async def fake_invoke(prompt, model, lg_thread_id, ws_thread_id, agent_id=None, chain_depth=0):
+        captured["chain_depth"] = chain_depth
+        return ("ok", [])
+
+    monkeypatch.setattr(ar, "_invoke_graph", fake_invoke)
+    monkeypatch.setattr(ar, "_session_factory", lambda: _ctx(db))
+    monkeypatch.setattr(ar, "schedule_memory_distillation", lambda *a, **k: None)
+    monkeypatch.setattr(ar, "_episode_path_for", lambda agent: tmp_path / "none.jsonl")
+
+    await ar.fire_agent(agent.id, trigger_id=None, trigger_context={"chain_depth": 3})
+    assert captured["chain_depth"] == 3
 
 
 import contextlib

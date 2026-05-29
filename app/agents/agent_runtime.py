@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import app.config as app_config
+from app.agents.agent_episodes import append_episode
 from app.agents.agent_memory import agent_lock, distil_memory
 from app.db.engine import AsyncSessionLocal
 from app.db.models import Agent, AgentRun, Message, Thread
@@ -28,7 +29,7 @@ def _session_factory():
 
 
 async def _invoke_graph(prompt: str, model: str, lg_thread_id: str, ws_thread_id: int,
-                        agent_id: int | None = None) -> tuple[str, list[str]]:
+                        agent_id: int | None = None, chain_depth: int = 0) -> tuple[str, list[str]]:
     """Run the existing supervisor graph and return (final assistant text, actions).
 
     `prompt` is the directive + trigger data (sent as the HumanMessage). When
@@ -53,6 +54,7 @@ async def _invoke_graph(prompt: str, model: str, lg_thread_id: str, ws_thread_id
     }
     if agent_id is not None:
         configurable["agent_id"] = agent_id
+    configurable["chain_depth"] = chain_depth
     lg_config = {
         "recursion_limit": 100,
         "configurable": configurable,
@@ -104,6 +106,11 @@ def _describe_tool_call(tc: dict) -> str:
 def _resolve_memory_path(memory_path: str) -> Path:
     p = Path(memory_path)
     return p if p.is_absolute() else app_config.WORKSPACE_DIR / p
+
+
+def _episode_path_for(agent) -> Path:
+    """agents/<id>_episodes.jsonl alongside the memory file."""
+    return app_config.WORKSPACE_DIR / "agents" / f"{agent.id}_episodes.jsonl"
 
 
 async def fire_agent(agent_id: int, trigger_id: int | None, trigger_context: dict) -> str:
@@ -163,6 +170,8 @@ async def fire_agent(agent_id: int, trigger_id: int | None, trigger_context: dic
         # trigger data as the user turn. The directive is the trusted instruction;
         # the trigger block is external data the agent acts ON (never obeys).
         trigger_block = trigger_context.get("trusted_block", "") if trigger_context else ""
+        chain_depth = int((trigger_context or {}).get("chain_depth", 0))
+        trigger_type_for_log = (trigger_context or {}).get("trigger_type", "")
         directive = (
             "[AGENT RUN] An automatic trigger woke you (the user is NOT here). Do EXACTLY what "
             "your AGENT ROLE says to do — nothing more, nothing less.\n"
@@ -189,6 +198,7 @@ async def fire_agent(agent_id: int, trigger_id: int | None, trigger_context: dic
                 lg_thread_id=f"agent_{agent_id}_{run_id}",
                 ws_thread_id=thread_id,
                 agent_id=agent_id,
+                chain_depth=chain_depth,
             )
         except Exception as exc:
             logger.exception("Agent %d run %d failed: %s", agent_id, run_id, exc)
@@ -220,6 +230,22 @@ async def fire_agent(agent_id: int, trigger_id: int | None, trigger_context: dic
                 run_obj.status = status
                 run_obj.trigger_summary = record[:200]
             await db.commit()
+
+        # Append an immutable episode for the activity timeline + agent_recall.
+        # Best-effort: a logging failure must never fail the run.
+        try:
+            async with _session_factory() as db:
+                agent_obj = await db.get(Agent, agent_id)
+            if agent_obj is not None:
+                append_episode(
+                    _episode_path_for(agent_obj),
+                    run_id=run_id,
+                    trigger_type=trigger_type_for_log,
+                    summary=record,
+                    actions=actions,
+                )
+        except Exception:
+            logger.warning("episode append failed for agent %d run %d", agent_id, run_id)
 
         # Safe to call inside the lock: this only arms a loop.call_later timer and
         # returns immediately. It does NOT acquire agent_lock or run _run_distillation
